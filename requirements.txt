@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+supabase
+anthropic
+openai
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+asyncpg
+python-jose[cryptography]
+passlib[bcrypt]

@@ -1,0 +1,31 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Chat Agent - Backend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd '/Users/alias_alex/Developer/Nexus Projects/Chat Agent/server' && npm run server"],
+      "port": 3000
+    },
+    {
+      "name": "Chat Agent - Frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173,
+      "cwd": "/Users/alias_alex/Developer/Nexus Projects/Chat Agent/client"
+    },
+    {
+      "name": "Civic Sense Management System",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "cwd": "/Users/alias_alex/Developer/Nexus Projects/Civic_sense_management_system/civicconnect"
+    },
+    {
+      "name": "RAG Project",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd '/Users/alias_alex/Developer/Nexus Projects/RAG_Project' && python3 main.py"],
+      "port": null
+    }
+  ]
+}
