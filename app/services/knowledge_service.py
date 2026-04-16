@@ -1,17 +1,23 @@
 """
-Knowledge Agent — lazily loads the knowledge base.
+Knowledge Agent — loads the knowledge base from Supabase storage.
 
 Only called when the Decision Agent sets needs_kb=True. This avoids
 loading large KB text on every request (property-only queries don't need it).
 
-The KB stub returns an empty string by default. Replace the content of
-_load_kb_content() when a real knowledge base source is available
-(e.g., a Supabase query, a file, or a vector search).
+The KB is fetched once from the Supabase public storage URL and cached
+for the lifetime of the process. Call invalidate_cache() to force a re-fetch.
 """
-from typing import Optional
 import logging
+from typing import Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
+
+_KB_URL = (
+    "https://mkwuyzmhsnmrkhsuvejp.supabase.co/storage/v1/object/public/"
+    "system-configs/knowledge_base_v2.md"
+)
 
 # Module-level cache: loaded once per process lifetime when first requested
 _kb_cache: Optional[str] = None
@@ -27,18 +33,34 @@ def load_kb() -> str:
         logger.info("[KB] Returning cached knowledge base")
         return _kb_cache
 
-    logger.info("[KB] Loading knowledge base...")
-    _kb_cache = _load_kb_content()
+    logger.info("[KB] Loading knowledge base from Supabase storage...")
+    _kb_cache = _fetch_kb()
     logger.info(f"[KB] Loaded {len(_kb_cache)} chars")
     return _kb_cache
 
 
-def _load_kb_content() -> str:
-    """
-    Stub implementation.
-    Replace with actual KB source when available:
-      - Read from a markdown file
-      - Query Supabase for sales scripts / objection handlers
-      - Perform a vector similarity search
-    """
-    return ""
+def _fetch_kb() -> str:
+    """Fetch knowledge_base_v2.md from Supabase public storage."""
+    try:
+        resp = httpx.get(_KB_URL, timeout=10)
+        resp.raise_for_status()
+        text = resp.text.strip()
+        # Strip markdown code fences if present
+        if "```" in text:
+            start = text.find("```") + 3
+            newline = text.find("\n", start)
+            end = text.rfind("```")
+            text = text[newline + 1 : end].strip()
+        logger.info(
+            f"[KB] Loaded knowledge base: {len(text)} chars from Supabase storage"
+        )
+        return text
+    except Exception as e:
+        logger.error(f"[KB] Failed to fetch knowledge base: {e}")
+        return ""
+
+
+def invalidate_cache():
+    """Force re-fetch on next load_kb() call."""
+    global _kb_cache
+    _kb_cache = None

@@ -110,9 +110,10 @@ def _format_properties(properties: list[dict]) -> str:
             f"   Walk: {p.get('walk_time_mins', 'N/A')} min "
             f"({p.get('walk_dist_km', 'N/A')} km) | "
             f"Car: {p.get('car_time_mins', 'N/A')} min\n"
-            f"   Amenities: {p.get('amenities', 'N/A')}\n"
+            f"   Amenities: {p.get('property_amenities', 'N/A')}\n"
             f"   Recon: {p.get('recon_conf', 'N/A')} | "
             f"Commission: {p.get('avg_commission', 'N/A')}\n"
+            f"Gaurantor: {p.get('gaurantor', 'N/A')}"
         )
     return "\n".join(lines)
 
@@ -194,7 +195,7 @@ def fetch_properties(filters: dict) -> tuple[str, bool]:
                 False,
             )
 
-        text = _format_properties(props)
+        text = props
         logger.info(f"[RETRIEVAL] Returning {len(props)} properties ({len(text)} chars)")
         return text, True
 

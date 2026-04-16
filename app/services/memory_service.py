@@ -18,6 +18,7 @@ def create_conversation(
     email: str = "",
     filters: dict = None,
     conversation_id: str = None,
+    enquiry_type: str = "property_recommendation",
 ) -> str:
     """
     Insert a new conversation row and return its conversation_id (UUID).
@@ -27,6 +28,8 @@ def create_conversation(
                          inserted with this ID (used by legacy endpoints that
                          receive a client-generated chatId). When omitted the
                          DB default (gen_random_uuid()) is used.
+        enquiry_type:    One of property_recommendation, sales_assist,
+                         general_question.
     """
     supabase = get_supabase()
     payload = {
@@ -35,6 +38,7 @@ def create_conversation(
         "filters": filters or {},
         "messages": [],
         "is_deleted": False,
+        "enquiry_type": enquiry_type,
         "created_at": _now(),
         "updated_at": _now(),
     }
@@ -177,3 +181,32 @@ def delete_conversation(conversation_id: str) -> str:
             f"({len(messages)} messages preserved)"
         )
         return "soft"
+
+
+# ── Phase D: context tracking ────────────────────────────────────────────────
+
+def update_context_flags(conversation_id: str, flags: dict) -> None:
+    """
+    Update context_flags JSONB on the conversation row.
+    Tracks which data sources were used in the last turn
+    (e.g. {"used_property_data": true, "used_kb": false}).
+    """
+    supabase = get_supabase()
+    supabase.table(TABLE).update({
+        "context_flags": flags,
+        "updated_at": _now(),
+    }).eq("conversation_id", conversation_id).execute()
+    logger.info(f"[MEMORY] context_flags updated for {conversation_id}: {flags}")
+
+
+def update_last_intent(conversation_id: str, intent: dict) -> None:
+    """
+    Store the latest extracted intent / filters snapshot.
+    Useful for debugging and for tracking how filters evolved over time.
+    """
+    supabase = get_supabase()
+    supabase.table(TABLE).update({
+        "last_intent": intent,
+        "updated_at": _now(),
+    }).eq("conversation_id", conversation_id).execute()
+    logger.info(f"[MEMORY] last_intent updated for {conversation_id}")

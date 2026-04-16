@@ -268,3 +268,9 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE INDEX IF NOT EXISTS idx_conversations_user_id   ON conversations(user_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_is_deleted ON conversations(is_deleted);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC);
+
+-- Phase D: enquiry type, context tracking, and last intent
+ALTER TABLE conversations
+  ADD COLUMN IF NOT EXISTS enquiry_type   TEXT  DEFAULT 'property_recommendation',
+  ADD COLUMN IF NOT EXISTS context_flags  JSONB DEFAULT '{"used_property_data": false, "used_kb": false}',
+  ADD COLUMN IF NOT EXISTS last_intent    JSONB DEFAULT '{}';

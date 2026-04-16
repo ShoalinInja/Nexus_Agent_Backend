@@ -30,14 +30,24 @@ async def send_message(
     """
     Send a message in an existing conversation and run the full multi-agent pipeline.
 
-    Pipeline:
-      Memory → Decision → Retrieval (if needed) → Knowledge (if needed) → Response → Memory
+    Pipeline (property_recommendation):
+      Memory → Filter-change detect → Decision → Retrieval → Knowledge → Response → Memory
+
+    Pipeline (sales_assist):
+      Memory → Knowledge → Response → Memory
+
+    Pipeline (general_question):
+      Memory → Response → Memory
     """
     user_id = str(current_user["id"])
     conversation_id = body.conversation_id
-    logger.info(f"[CHAT] send conversation_id={conversation_id} user_id={user_id}")
+    logger.info(
+        f"[CHAT] ═══ NEW REQUEST ═══ "
+        f"conversation_id={conversation_id} user_id={user_id}"
+    )
+    logger.info(f"[CHAT] user_prompt='{body.message[:120]}...'")
 
-    # ── Load conversation ─────────────────────────────────────────────────────
+    # ── 1. Load conversation ─────────────────────────────────────────────────
     convo = memory_service.get_conversation(conversation_id)
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -49,8 +59,22 @@ async def send_message(
     stored_filters: dict = convo.get("filters") or {}
 
     is_first_message = len(messages) == 0
+    msg_count = len(messages)
 
-    # ── Merge filters ─────────────────────────────────────────────────────────
+    # Enquiry type: use request value on first message, else load from DB
+    enquiry_type = (
+        body.enquiry_type
+        or convo.get("enquiry_type")
+        or "property_recommendation"
+    )
+
+    logger.info(
+        f"[CHAT] ── STEP 1: LOAD ── "
+        f"enquiry_type={enquiry_type} is_first_message={is_first_message} "
+        f"existing_messages={msg_count} stored_filters={stored_filters}"
+    )
+
+    # ── 2. Merge filters (request overrides stored) ──────────────────────────
     request_filters = {
         k: v
         for k, v in {
@@ -64,31 +88,90 @@ async def send_message(
         if v is not None
     }
     effective_filters = {**stored_filters, **request_filters}
-    logger.info(f"[CHAT] effective_filters={effective_filters}")
-
-    # ── Decision Agent ────────────────────────────────────────────────────────
-    plan = decision_service.decide(
-        user_message=body.message,
-        is_first_message=is_first_message,
-        messages=messages,
-    )
     logger.info(
-        f"[CHAT] needs_retrieval={plan.needs_retrieval} "
-        f"needs_kb={plan.needs_kb} reason='{plan.reason}'"
+        f"[CHAT] ── STEP 2: FILTERS ── "
+        f"request_filters={request_filters} effective_filters={effective_filters}"
     )
 
-    # ── Retrieval Agent ───────────────────────────────────────────────────────
+    # ── 3. Detect filter changes ─────────────────────────────────────────────
+    filters_changed = False
+    changed_fields = {}
+    if not is_first_message and request_filters:
+        for key, new_val in request_filters.items():
+            old_val = stored_filters.get(key)
+            if old_val is not None and str(new_val) != str(old_val):
+                filters_changed = True
+                changed_fields[key] = {"old": old_val, "new": new_val}
+                logger.info(
+                    f"[CHAT] Filter changed: {key} '{old_val}' → '{new_val}'"
+                )
+
+    if filters_changed:
+        logger.info(f"[CHAT] ── STEP 3: FILTER CHANGE DETECTED ── {changed_fields}")
+    else:
+        logger.info("[CHAT] ── STEP 3: NO FILTER CHANGES ──")
+
+    # ── 4. Route by enquiry type ─────────────────────────────────────────────
     property_data = ""
-    data_fetched = False
-    if plan.needs_retrieval:
-        property_data, data_fetched = retrieval_service.fetch_properties(effective_filters)
-
-    # ── Knowledge Agent ───────────────────────────────────────────────────────
     kb_text = ""
-    if plan.needs_kb:
-        kb_text = knowledge_service.load_kb()
+    data_fetched = False
+    decision_reason = ""
 
-    # ── Response Agent ────────────────────────────────────────────────────────
+    logger.info(f"[CHAT] ── STEP 4: ROUTING ── enquiry_type={enquiry_type}")
+
+    if enquiry_type == "property_recommendation":
+        # Full pipeline: decision → retrieval → KB
+        plan = decision_service.decide(
+            user_message=body.message,
+            is_first_message=is_first_message,
+            messages=messages,
+            filters_changed=filters_changed,
+        )
+        decision_reason = plan.reason
+        logger.info(
+            f"[CHAT] ── STEP 4a: DECISION ── "
+            f"needs_retrieval={plan.needs_retrieval} "
+            f"needs_kb={plan.needs_kb} reason='{plan.reason}'"
+        )
+
+        if plan.needs_retrieval:
+            logger.info("[CHAT] ── STEP 4b: RETRIEVAL ── fetching property data...")
+            property_data, data_fetched = retrieval_service.fetch_properties(
+                effective_filters
+            )
+            logger.info(
+                f"[CHAT] ── STEP 4b: RETRIEVAL DONE ── "
+                f"data_fetched={data_fetched} chars={len(property_data)}"
+            )
+        else:
+            logger.info("[CHAT] ── STEP 4b: RETRIEVAL SKIPPED ──")
+
+        if plan.needs_kb:
+            logger.info("[CHAT] ── STEP 4c: KB ── loading knowledge base...")
+            kb_text = knowledge_service.load_kb()
+            logger.info(
+                f"[CHAT] ── STEP 4c: KB DONE ── chars={len(kb_text)}"
+            )
+        else:
+            logger.info("[CHAT] ── STEP 4c: KB SKIPPED ──")
+
+    elif enquiry_type == "sales_assist":
+        decision_reason = "sales_assist mode — always load KB"
+        logger.info("[CHAT] ── STEP 4: SALES ASSIST → loading KB only ──")
+        kb_text = knowledge_service.load_kb()
+        logger.info(f"[CHAT] KB loaded: {len(kb_text)} chars")
+
+    elif enquiry_type == "general_question":
+        decision_reason = "general_question mode — response agent only"
+        logger.info("[CHAT] ── STEP 4: GENERAL QUESTION → response only ──")
+
+    # ── 5. Response Agent ────────────────────────────────────────────────────
+    logger.info(
+        f"[CHAT] ── STEP 5: RESPONSE AGENT ── "
+        f"property_data={'yes' if property_data else 'no'} "
+        f"kb={'yes' if kb_text else 'no'} "
+        f"history_msgs={len(messages)}"
+    )
     reply = await response_service.generate_response(
         user_prompt=body.message,
         messages=messages,
@@ -96,8 +179,9 @@ async def send_message(
         kb_text=kb_text,
         filters=effective_filters,
     )
+    logger.info(f"[CHAT] ── STEP 5: RESPONSE DONE ── reply_chars={len(reply)}")
 
-    # ── Memory Agent — persist messages ──────────────────────────────────────
+    # ── 6. Persist: messages + filters + context_flags ───────────────────────
     now = datetime.now(timezone.utc).isoformat()
     user_msg = {"role": "user", "content": body.message, "timestamp": now}
     asst_msg = {"role": "assistant", "content": reply, "timestamp": now}
@@ -108,8 +192,38 @@ async def send_message(
     if request_filters:
         memory_service.update_filters(conversation_id, effective_filters)
 
+    # Build rich context_flags — includes which prompt triggered each flag
+    context_flags = {
+        "used_property_data": bool(property_data),
+        "used_kb": bool(kb_text),
+        "trigger_prompt": body.message[:200],
+        "decision_reason": decision_reason,
+        "enquiry_type": enquiry_type,
+        "timestamp": now,
+    }
+    if filters_changed:
+        context_flags["filters_changed"] = changed_fields
+
+    memory_service.update_context_flags(conversation_id, context_flags)
+
+    # Store last_intent on first message or when filters change
+    if is_first_message or filters_changed:
+        memory_service.update_last_intent(conversation_id, {
+            "enquiry_type": enquiry_type,
+            "effective_filters": effective_filters,
+            "trigger_prompt": body.message[:200],
+            "timestamp": now,
+        })
+
     logger.info(
-        f"[CHAT] done. total_messages={len(updated_messages)} data_fetched={data_fetched}"
+        f"[CHAT] ── STEP 6: PERSIST DONE ── "
+        f"total_messages={len(updated_messages)} "
+        f"context_flags={context_flags}"
+    )
+    logger.info(
+        f"[CHAT] ═══ REQUEST COMPLETE ═══ "
+        f"data_fetched={data_fetched} used_kb={bool(kb_text)} "
+        f"enquiry_type={enquiry_type}"
     )
 
     return ChatSendResponse(

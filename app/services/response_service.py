@@ -1,40 +1,87 @@
 """
 Response Agent — generates the final LLM reply using SYSTEM_PROMPT_v2.md.
 
-The system prompt is loaded once at module import and cached.
+The system prompt is fetched from Supabase storage on first call and cached
+for the process lifetime. Falls back to the local file if Supabase is
+unreachable.
+
 Property data, KB text, and student filters are injected into the
 system prompt at call time — not stored in memory between calls.
 """
 import logging
 from pathlib import Path
+from typing import Optional
 
 import anthropic
+import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── Load SYSTEM_PROMPT_v2.md once at module level ─────────────────────────────
-_PROMPT_PATH = Path(__file__).parent.parent / "prompt" / "SYSTEM_PROMPT_v2.md"
+# ── System prompt: fetch from Supabase, cache for process lifetime ──────────
+_SYSTEM_PROMPT_URL = (
+    "https://mkwuyzmhsnmrkhsuvejp.supabase.co/storage/v1/object/public/"
+    "system-configs/SYSTEM_PROMPT_v2.md"
+)
+_system_prompt_cache: Optional[str] = None
 
-try:
-    _raw = _PROMPT_PATH.read_text(encoding="utf-8")
-    # Strip the markdown code fence wrapper (```...```) if present
-    if "```" in _raw:
-        start = _raw.find("```") + 3
-        # skip optional language tag on same line
-        newline = _raw.find("\n", start)
-        end = _raw.rfind("```")
-        _SYSTEM_PROMPT = _raw[newline + 1 : end].strip()
-    else:
-        _SYSTEM_PROMPT = _raw.strip()
-    logger.info(f"[RESPONSE] SYSTEM_PROMPT_v2.md loaded: {len(_SYSTEM_PROMPT)} chars")
-except Exception as e:
-    logger.error(f"[RESPONSE] Failed to load SYSTEM_PROMPT_v2.md: {e}")
-    _SYSTEM_PROMPT = (
+
+def _strip_code_fences(raw: str) -> str:
+    """Remove wrapping markdown code fences (```...```) if present."""
+    if "```" in raw:
+        start = raw.find("```") + 3
+        newline = raw.find("\n", start)
+        end = raw.rfind("```")
+        return raw[newline + 1 : end].strip()
+    return raw.strip()
+
+
+def _fetch_system_prompt() -> str:
+    """
+    Fetch SYSTEM_PROMPT_v2.md from Supabase storage.
+    Cached for the lifetime of the process.
+    Falls back to local file, then to a hardcoded default.
+    """
+    global _system_prompt_cache
+    if _system_prompt_cache is not None:
+        return _system_prompt_cache
+
+    # Try Supabase storage first
+    try:
+        resp = httpx.get(_SYSTEM_PROMPT_URL, timeout=10)
+        resp.raise_for_status()
+        text = _strip_code_fences(resp.text)
+        _system_prompt_cache = text
+        logger.info(
+            f"[RESPONSE] System prompt loaded from Supabase: {len(text)} chars"
+        )
+        return text
+    except Exception as e:
+        logger.error(
+            f"[RESPONSE] Failed to fetch system prompt from Supabase: {e}"
+        )
+
+    # Fallback: local file
+    try:
+        prompt_path = Path(__file__).parent.parent / "prompt" / "SYSTEM_PROMPT_v2.md"
+        raw = prompt_path.read_text(encoding="utf-8")
+        text = _strip_code_fences(raw)
+        _system_prompt_cache = text
+        logger.warning(
+            f"[RESPONSE] Fell back to local SYSTEM_PROMPT_v2.md: {len(text)} chars"
+        )
+        return text
+    except Exception as e2:
+        logger.error(f"[RESPONSE] Local fallback also failed: {e2}")
+
+    # Last resort
+    fallback = (
         "You are a property recommendation specialist. "
         "Help sales agents find the right student accommodation."
     )
+    _system_prompt_cache = fallback
+    return fallback
 
 
 def _format_filters(filters: dict) -> str:
@@ -75,8 +122,8 @@ async def generate_response(
     Returns:
         str: The assistant's reply.
     """
-    # Build system prompt by appending context sections to SYSTEM_PROMPT_v2
-    system = _SYSTEM_PROMPT
+    # Build system prompt by appending context sections
+    system = _fetch_system_prompt()
 
     if filters:
         system += f"\n\n## Current Student Context\n{_format_filters(filters)}"
@@ -92,6 +139,29 @@ async def generate_response(
 
     if kb_text:
         system += f"\n\n## Knowledge Base\n{kb_text}"
+
+    # Context mode indicator — helps the LLM know what data is available
+    if property_data and kb_text:
+        system += (
+            "\n\n## Context Mode\n"
+            "Use BOTH the supply data and knowledge base to answer."
+        )
+    elif property_data:
+        system += (
+            "\n\n## Context Mode\n"
+            "Focus on comparing and recommending from the supply data."
+        )
+    elif kb_text:
+        system += (
+            "\n\n## Context Mode\n"
+            "Answer using the knowledge base. "
+            "No property listings available for this query."
+        )
+    else:
+        system += (
+            "\n\n## Context Mode\n"
+            "Answer from prior conversation context and general knowledge."
+        )
 
     # Trim history to last 10 messages to avoid token explosion.
     # CRITICAL: strip all fields except role+content — Anthropic rejects

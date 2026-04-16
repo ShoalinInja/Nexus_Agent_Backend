@@ -34,6 +34,7 @@ async def create_conversation(
         user_id=user_id,
         email=email,
         filters=body.filters,
+        enquiry_type=body.enquiry_type,
     )
 
     convo = memory_service.get_conversation(conversation_id)

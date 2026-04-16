@@ -5,6 +5,7 @@ Decides which downstream agents to invoke based on conversation state
 and message content. No LLM calls here; this keeps routing cheap and fast.
 
 Falls back to the Haiku LLM classifier only when heuristics are ambiguous.
+The Haiku classifier can set BOTH needs_retrieval AND needs_kb.
 """
 import logging
 from dataclasses import dataclass
@@ -40,6 +41,23 @@ _RETRIEVAL_TRIGGERS = frozenset(
         "availability",
         "still available",
         "current price",
+        # Phase D: more specific filter-change signals
+        "change city",
+        "switch to",
+        "move to",
+        "different room",
+        "ensuite",
+        "shared room",
+        "standard room",
+        "premium",
+        "increase budget",
+        "decrease budget",
+        "longer lease",
+        "shorter lease",
+        "different date",
+        "move in",
+        "earlier",
+        "later move",
     ]
 )
 
@@ -62,6 +80,66 @@ _NO_RETRIEVAL_SIGNALS = frozenset(
     ]
 )
 
+# Keywords that signal KB is needed — sales techniques, process, policies
+_KB_SIGNALS = frozenset(
+    [
+        # Process / policy questions
+        "how does",
+        "what is the process",
+        "policy",
+        "refund",
+        "cancellation",
+        "guarantee",
+        "eligibility",
+        "payment plan",
+        "installment",
+        "deposit",
+        "booking fee",
+        # Sales technique / closing questions
+        "close the deal",
+        "closing",
+        "urgency",
+        "create urgency",
+        "how to sell",
+        "how do i sell",
+        "convince",
+        "persuade",
+        "objection",
+        "handle objection",
+        "overcome objection",
+        "sales script",
+        "sales pitch",
+        "pitch",
+        "upsell",
+        "cross sell",
+        "negotiat",
+        "discount",
+        "offer",
+        "incentive",
+        "follow up",
+        "follow-up",
+        "callback",
+        "escalat",
+        "warm lead",
+        "cold lead",
+        "convert",
+        "conversion",
+        "student hesitat",
+        "not sure",
+        "thinking about it",
+        "compare with other",
+        "why uniacco",
+        "why us",
+        "what makes us different",
+        "competitor",
+        "commission",
+        "how much commission",
+        "recon",
+        "target",
+        "kpi",
+    ]
+)
+
 
 @dataclass
 class AgentPlan:
@@ -74,6 +152,7 @@ def decide(
     user_message: str,
     is_first_message: bool,
     messages: list[dict],
+    filters_changed: bool = False,
 ) -> AgentPlan:
     """
     Apply rule-based routing first.
@@ -83,6 +162,8 @@ def decide(
         user_message:     The current user prompt.
         is_first_message: True if no prior messages exist for this conversation.
         messages:         Prior conversation history (used for fallback LLM call).
+        filters_changed:  True if request contains filter values that differ
+                          from the stored filters (detected in chat.py).
 
     Returns:
         AgentPlan with needs_retrieval, needs_kb, and reason.
@@ -96,6 +177,15 @@ def decide(
             needs_retrieval=True,
             needs_kb=False,
             reason="First message — fetch initial property supply",
+        )
+
+    # Rule 1.5: explicit filter change from request params
+    if filters_changed:
+        logger.info("[DECISION] filters_changed=True → needs_retrieval=True")
+        return AgentPlan(
+            needs_retrieval=True,
+            needs_kb=False,
+            reason="Request contains updated filter values — re-fetch supply data",
         )
 
     # Rule 2: explicit retrieval trigger keywords
@@ -118,15 +208,14 @@ def decide(
                 reason=f"Follow-up signal '{signal}' — answer from history",
             )
 
-    # Rule 4: process / policy questions → KB
-    kb_signals = ["how does", "what is the process", "policy", "refund", "cancellation", "guarantee"]
-    for kb_signal in kb_signals:
+    # Rule 4: KB signals — sales techniques, process, policy questions
+    for kb_signal in _KB_SIGNALS:
         if kb_signal in msg_lower:
             logger.info(f"[DECISION] kb_signal='{kb_signal}' → needs_kb=True")
             return AgentPlan(
                 needs_retrieval=False,
                 needs_kb=True,
-                reason=f"Process question '{kb_signal}' — load knowledge base",
+                reason=f"KB signal '{kb_signal}' — load knowledge base",
             )
 
     # Fallback: delegate ambiguous messages to Haiku classifier
@@ -138,6 +227,8 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
     """
     LLM fallback — uses Haiku with forced tool use to classify the intent.
     Only called when Python rules are inconclusive.
+
+    The classifier decides BOTH data_required AND kb_required.
     """
     import asyncio
 
@@ -153,15 +244,22 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
         classifier_messages = clean + [{"role": "user", "content": user_message}]
 
         system = (
-            "You are a routing assistant for a property recommendation system. "
-            "Decide if fresh supply data (property listings, prices, availability) "
-            "needs to be fetched from the database to answer the user's question. "
-            "Set data_required=true if the user wants new/different properties or updated prices. "
-            "Set data_required=false if the user is asking about properties already in the conversation."
+            "You are a routing assistant for a property recommendation system used by UniAcco sales agents.\n\n"
+            "You must decide TWO things:\n"
+            "1. data_required — does the user need FRESH property listings / prices / availability from the database?\n"
+            "   Set true if the user wants new/different properties, updated prices, or availability checks.\n"
+            "   Set false if the user is asking about properties already in the conversation.\n\n"
+            "2. kb_required — does the user need information from the knowledge base (sales techniques, "
+            "closing strategies, objection handling, booking process, payment policies, commission info, "
+            "eligibility criteria, escalation procedures, UniAcco processes)?\n"
+            "   Set true if the user is asking HOW to sell, close, handle objections, create urgency, "
+            "booking steps, payment options, refund policy, or any sales/process question.\n"
+            "   Set false if the user only needs property data or is chatting about specific listings.\n\n"
+            "IMPORTANT: Both can be true simultaneously (e.g., 'show me properties and tell me how to pitch them')."
         )
         tool = {
             "name": "routing_decision",
-            "description": "Decide if property data needs to be fetched",
+            "description": "Decide if property data and/or knowledge base are needed",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -169,12 +267,19 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
                         "type": "boolean",
                         "description": "True if live property data is needed",
                     },
+                    "kb_required": {
+                        "type": "boolean",
+                        "description": (
+                            "True if knowledge base is needed (sales techniques, "
+                            "process, policy, objection handling, closing strategies)"
+                        ),
+                    },
                     "reason": {
                         "type": "string",
                         "description": "One line explanation",
                     },
                 },
-                "required": ["data_required", "reason"],
+                "required": ["data_required", "kb_required", "reason"],
             },
         }
         resp = await client.messages.create(
@@ -187,11 +292,17 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
         )
         result = resp.content[0].input
         data_required = result.get("data_required", False)
+        kb_required = result.get("kb_required", False)
         reason = result.get("reason", "LLM classifier decision")
         logger.info(
-            f"[DECISION] Haiku classifier → data_required={data_required} reason='{reason}'"
+            f"[DECISION] Haiku classifier → data_required={data_required} "
+            f"kb_required={kb_required} reason='{reason}'"
         )
-        return AgentPlan(needs_retrieval=data_required, needs_kb=False, reason=reason)
+        return AgentPlan(
+            needs_retrieval=data_required,
+            needs_kb=kb_required,
+            reason=reason,
+        )
 
     try:
         loop = asyncio.get_event_loop()

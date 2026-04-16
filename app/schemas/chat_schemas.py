@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 class ConversationCreateRequest(BaseModel):
     filters: dict = {}
+    enquiry_type: str = "property_recommendation"
 
 
 class ConversationCreateResponse(BaseModel):
@@ -36,6 +37,7 @@ class ConversationDeleteResponse(BaseModel):
 class ChatSendRequest(BaseModel):
     conversation_id: str
     message: str
+    enquiry_type: Optional[str] = None  # Only sent on first message
     # Filter fields — only required on the first message of a conversation.
     # On follow-ups the backend loads them from DB.
     city: Optional[str] = None
