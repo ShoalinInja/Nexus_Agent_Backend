@@ -1,12 +1,12 @@
+import json
 import logging
 from datetime import datetime
 from typing import Optional
 
-import anthropic
 from fastapi import HTTPException
 
-from app.core.config import settings
 from app.core.database import get_supabase
+from app.core.llm import get_openai_async_client
 from app.schemas.enquiry_schemas import PropertyEnquiryRequest, PropertyEnquiryResponse
 
 logger = logging.getLogger(__name__)
@@ -14,17 +14,10 @@ logger = logging.getLogger(__name__)
 
 async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquiryResponse:
 
-    # ── STEP 1: Detect request type ──────────────────────────────────────────
-
-    is_first_request = session is None
-
-    is_empty_prompt = not req.prompt or req.prompt.strip() == ""
-
-    should_force_data_fetch = is_first_request and is_empty_prompt
+    # ── STEP 1: Log request ──────────────────────────────────────────────────
 
     logger.info("=" * 60)
     logger.info(f"[ENQUIRY] chatId={req.chatId} userId={req.userId}")
-    logger.info(f"[ENQUIRY] is_first_request={is_first_request}")
     logger.info(f"[ENQUIRY] prompt='{req.prompt}'")
 
     # ── STEP 2: Load session from Supabase ───────────────────────────────────
@@ -55,13 +48,23 @@ async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquir
         logger.info(f"[SESSION] Stored params: {session_params}")
     else:
         logger.info(f"[SESSION] No existing session found.")
-        if not is_first_request:
-            logger.warning("[SESSION] Follow-up with no existing session.")
-            raise HTTPException(
-                status_code=400,
-                detail="No session found for this chatId. "
-                       "Please start with city, budget and other details."
-            )
+
+    # Fix: derive is_first_request AFTER session is loaded
+    is_first_request = session is None
+
+    is_empty_prompt = not req.prompt or req.prompt.strip() == ""
+
+    should_force_data_fetch = is_first_request and is_empty_prompt
+
+    logger.info(f"[ENQUIRY] is_first_request={is_first_request}")
+
+    if not result.data and not is_first_request:
+        logger.warning("[SESSION] Follow-up with no existing session.")
+        raise HTTPException(
+            status_code=400,
+            detail="No session found for this chatId. "
+                   "Please start with city, budget and other details."
+        )
 
     # Resolve effective params (use request params if present, else session)
     effective_params = {
@@ -74,14 +77,7 @@ async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquir
     }
     logger.info(f"[PARAMS] Effective params: {effective_params}")
 
-    # ── STEP 3: Mini Intent Classifier (Haiku) ───────────────────────────────
-    # 🔥 FORCE DATA FETCH FOR EMPTY FIRST MESSAGE
-    if should_force_data_fetch:
-        logger.info("[OVERRIDE] First empty message → forcing data fetch")
-        data_required = True
-        classifier_reason = "First empty message — auto fetch property data"
-
-    logger.info("[CLASSIFIER] Running mini intent classifier...")
+    # ── STEP 3: Mini Intent Classifier (gpt-4o-mini) ─────────────────────────
 
     trimmed_history = messages[-10:] if len(messages) > 10 else messages
 
@@ -104,6 +100,11 @@ Set data_required = false if:
 - User is comparing or asking follow-up about already-shown properties
 - User asks general questions answerable from conversation history
 - User asks about booking process, policies, or agent guidance
+
+Additionally, extract any search parameter changes the user mentions.
+Examples: "budget is 300" → {budget: 300}, "look at studios" → {room_type: "STUDIO"}
+Only include clearly changed params in updated_params. Empty object {} if nothing changed.
+When params change, data_required should be true.
 """
 
     params_context = ""
@@ -115,47 +116,105 @@ Set data_required = false if:
             f"Intake: {req.intake}, Lease: {req.lease} weeks\n"
         )
 
-    classifier_messages = trimmed_history + [{
-        "role": "user",
-        "content": f"{params_context}\nUser message: {req.prompt}"
-    }]
-
     classifier_tool = {
-        "name": "routing_decision",
-        "description": "Decide if property data needs to be fetched",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "data_required": {
-                    "type": "boolean",
-                    "description": "True if live property data is needed"
+        "type": "function",
+        "function": {
+            "name": "routing_decision",
+            "description": "Decide if property data needs to be fetched and extract any parameter changes",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "data_required": {
+                        "type": "boolean",
+                        "description": "True if live property data is needed"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "One line explanation of the decision"
+                    },
+                    "updated_params": {
+                        "type": "object",
+                        "description": "Any search parameters the user changed. Only include changed fields.",
+                        "properties": {
+                            "city": {"type": "string"},
+                            "university": {"type": "string"},
+                            "budget": {"type": "number"},
+                            "intake": {"type": "string"},
+                            "lease": {"type": "number"},
+                            "room_type": {"type": "string"}
+                        },
+                        "additionalProperties": False
+                    }
                 },
-                "reason": {
-                    "type": "string",
-                    "description": "One line explanation of the decision"
-                }
-            },
-            "required": ["data_required", "reason"]
+                "required": ["data_required", "reason", "updated_params"]
+            }
         }
     }
 
-    anthropic_client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    # FORCE DATA FETCH FOR EMPTY FIRST MESSAGE — skip classifier
+    if should_force_data_fetch:
+        logger.info("[OVERRIDE] First empty message → forcing data fetch")
+        data_required = True
+        classifier_reason = "First empty message — auto fetch property data"
+        classifier_result = {}
+    else:
+        logger.info("[CLASSIFIER] Running mini intent classifier...")
 
-    classifier_response = await anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
-        system=classifier_system,
-        tools=[classifier_tool],
-        tool_choice={"type": "tool", "name": "routing_decision"},
-        messages=classifier_messages
-    )
+        openai_client = get_openai_async_client()
 
-    classifier_result = classifier_response.content[0].input
-    data_required = classifier_result.get("data_required", True)
-    classifier_reason = classifier_result.get("reason", "")
+        classifier_openai_messages = [
+            {"role": "system", "content": classifier_system}
+        ] + [
+            {"role": m["role"], "content": m["content"]}
+            for m in trimmed_history
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ] + [{
+            "role": "user",
+            "content": f"{params_context}\nUser message: {req.prompt}" if params_context else req.prompt
+        }]
+
+        classifier_response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=300,
+            messages=classifier_openai_messages,
+            tools=[classifier_tool],
+            tool_choice={"type": "function", "function": {"name": "routing_decision"}},
+        )
+
+        classifier_result = json.loads(
+            classifier_response.choices[0].message.tool_calls[0].function.arguments
+        )
+        data_required = classifier_result.get("data_required", True)
+        classifier_reason = classifier_result.get("reason", "")
 
     logger.info(f"[CLASSIFIER] data_required={data_required}")
     logger.info(f"[CLASSIFIER] reason='{classifier_reason}'")
+
+    # ── STEP 3B: Apply any parameter changes detected by classifier ──────────
+    updated_params = classifier_result.get("updated_params", {}) if not should_force_data_fetch else {}
+    if updated_params:
+        for key, value in updated_params.items():
+            if value is not None:
+                old_value = effective_params.get(key)
+                effective_params[key] = value
+                logger.info(f"[PARAMS UPDATE] {key}: {old_value} → {value}")
+
+        # Save updated params to Supabase
+        update_payload = {k: v for k, v in updated_params.items() if v is not None}
+        update_payload["updated_at"] = datetime.utcnow().isoformat()
+        supabase.table("property_enquiry_sessions") \
+            .update(update_payload) \
+            .eq("chat_id", req.chatId) \
+            .execute()
+        logger.info(f"[PARAMS UPDATE] Saved {len(update_payload)-1} param changes to DB")
+
+        # Force data re-fetch when params change
+        if not data_required:
+            data_required = True
+            classifier_reason = f"Parameter changes detected: {list(updated_params.keys())} — re-fetching data"
+            logger.info("[PARAMS UPDATE] Forcing data_required=True due to param changes")
+    else:
+        logger.info("[PARAMS UPDATE] No parameter changes detected")
 
     # ── STEP 4: Fetch Supply Data (if required) ───────────────────────────────
 
@@ -286,25 +345,33 @@ Set data_required = false if:
     logger.info(f"[AGENT] System prompt length: "
                 f"{len(agent_system_prompt)} characters")
 
-    # ── STEP 6: Call Property Agent (Sonnet) ─────────────────────────────────
+    # ── STEP 6: Call Property Agent (gpt-5) ──────────────────────────────────
 
     logger.info("[AGENT] Calling property agent LLM...")
 
-    agent_messages = trimmed_history + [{
-        "role": "user",
-        "content": req.prompt
-    }]
+    logger.info(f"[AGENT] Sending {len(trimmed_history) + 1} messages to LLM")
 
-    logger.info(f"[AGENT] Sending {len(agent_messages)} messages to LLM")
+    if not should_force_data_fetch:
+        # openai_client already created above
+        pass
+    else:
+        openai_client = get_openai_async_client()
 
-    agent_response = await anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4024,
-        system=agent_system_prompt,
-        messages=agent_messages
+    agent_openai_messages = [
+        {"role": "system", "content": agent_system_prompt}
+    ] + [
+        {"role": m["role"], "content": m["content"]}
+        for m in trimmed_history
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    ] + [{"role": "user", "content": req.prompt}]
+
+    agent_response = await openai_client.chat.completions.create(
+        model="gpt-5",
+        # max_tokens=4024,
+        messages=agent_openai_messages,
     )
 
-    reply = agent_response.content[0].text
+    reply = agent_response.choices[0].message.content
     logger.info(f"[AGENT] Response received. Length: {len(reply)} characters")
     logger.info(f"[AGENT] Reply preview: '{reply[:100]}...'")
 

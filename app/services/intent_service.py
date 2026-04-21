@@ -2,10 +2,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-import anthropic
+import json
 
-from app.core.config import settings
 from app.core.database import get_supabase
+from app.core.llm import get_openai_async_client
 from app.schemas.intent_schemas import IntentRequest, IntentResponse
 
 logger = logging.getLogger(__name__)
@@ -15,70 +15,73 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 EXTRACT_INTENT_TOOL = {
-    "name": "extract_intent",
-    "description": (
-        "Extract property search intent from user message. "
-        "Always call this tool."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "reply": {
-                "type": "string",
-                "description": (
-                    "Natural language response to the user. "
-                    "If mandatory fields (city, budget) are missing, ask for them "
-                    "conversationally. If all mandatory fields are present, confirm "
-                    "and summarise."
-                ),
+    "type": "function",
+    "function": {
+        "name": "extract_intent",
+        "description": (
+            "Extract property search intent from user message. "
+            "Always call this tool."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reply": {
+                    "type": "string",
+                    "description": (
+                        "Natural language response to the user. "
+                        "If mandatory fields (city, budget) are missing, ask for them "
+                        "conversationally. If all mandatory fields are present, confirm "
+                        "and summarise."
+                    ),
+                },
+                "city": {"type": "string"},
+                "budget": {
+                    "type": "number",
+                    "description": "Weekly budget in GBP as a number",
+                },
+                "intake": {
+                    "type": "string",
+                    "description": "Move-in date as ISO date string",
+                },
+                "lease": {
+                    "type": "number",
+                    "description": "Lease length in weeks",
+                },
+                "room_type": {"type": "string"},
+                "university": {"type": "string"},
+                "uk_guarantor_available": {"type": "boolean"},
+                "installments": {"type": "string"},
+                "payment_mode": {"type": "string"},
+                "special_requirements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Any special requirements mentioned by the user",
+                },
+                "missing_fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of mandatory fields still missing. "
+                        "Mandatory fields are: city, budget"
+                    ),
+                },
+                "confidence_score": {
+                    "type": "number",
+                    "description": (
+                        "Confidence 0.0–1.0 that the extracted data is correct. "
+                        "1.0 = all mandatory + most optional fields present. "
+                        "0.5 = only mandatory fields. "
+                        "0.0 = nothing extracted."
+                    ),
+                },
             },
-            "city": {"type": ["string", "null"]},
-            "budget": {
-                "type": ["number", "null"],
-                "description": "Weekly budget in GBP as a number",
-            },
-            "intake": {
-                "type": ["string", "null"],
-                "description": "Move-in date as ISO date string",
-            },
-            "lease": {
-                "type": ["number", "null"],
-                "description": "Lease length in weeks",
-            },
-            "room_type": {"type": ["string", "null"]},
-            "university": {"type": ["string", "null"]},
-            "uk_guarantor_available": {"type": ["boolean", "null"]},
-            "installments": {"type": ["string", "null"]},
-            "payment_mode": {"type": ["string", "null"]},
-            "special_requirements": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Any special requirements mentioned by the user",
-            },
-            "missing_fields": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "List of mandatory fields still missing. "
-                    "Mandatory fields are: city, budget"
-                ),
-            },
-            "confidence_score": {
-                "type": "number",
-                "description": (
-                    "Confidence 0.0–1.0 that the extracted data is correct. "
-                    "1.0 = all mandatory + most optional fields present. "
-                    "0.5 = only mandatory fields. "
-                    "0.0 = nothing extracted."
-                ),
-            },
+            "required": [
+                "reply",
+                "missing_fields",
+                "confidence_score",
+                "special_requirements",
+            ],
         },
-        "required": [
-            "reply",
-            "missing_fields",
-            "confidence_score",
-            "special_requirements",
-        ],
     },
 }
 
@@ -193,34 +196,38 @@ async def handle_intent(request: IntentRequest) -> IntentResponse:
     ]
 
     # -------------------------------------------------------------------------
-    # STEP 3 & 4 — Call Anthropic with forced tool use
+    # STEP 3 & 4 — Call OpenAI with forced tool use
     # -------------------------------------------------------------------------
-    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    client = get_openai_async_client()
 
-    messages = trimmed_context + [{"role": "user", "content": request.prompt}]
+    messages = (
+        [{"role": "system", "content": SYSTEM_PROMPT}]
+        + trimmed_context
+        + [{"role": "user", "content": request.prompt}]
+    )
 
-    response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        tools=[EXTRACT_INTENT_TOOL],
-        tool_choice={"type": "tool", "name": "extract_intent"},
+    response = await client.chat.completions.create(
+        model="gpt-5",
+        # max_tokens=1024,
         messages=messages,
+        tools=[EXTRACT_INTENT_TOOL],
+        tool_choice={"type": "function", "function": {"name": "extract_intent"}},
     )
 
     # -------------------------------------------------------------------------
     # STEP 6 — Parse tool response
     # -------------------------------------------------------------------------
-    tool_block = next(
-        (block for block in response.content if block.type == "tool_use"), None
-    )
-
-    if tool_block is None:
-        logger.error("extract_intent tool block missing from response.")
-        tool_input: dict = {"reply": "", "missing_fields": ["city", "budget"],
-                            "confidence_score": 0.0, "special_requirements": []}
+    oai_message = response.choices[0].message
+    if oai_message.tool_calls:
+        tool_input: dict = json.loads(oai_message.tool_calls[0].function.arguments)
     else:
-        tool_input = tool_block.input
+        logger.error("extract_intent tool_calls missing from response.")
+        tool_input = {
+            "reply": "",
+            "missing_fields": ["city", "budget"],
+            "confidence_score": 0.0,
+            "special_requirements": [],
+        }
 
     mandatory_present = (
         tool_input.get("city") is not None

@@ -3,38 +3,39 @@ import logging
 import re
 from typing import List, Optional
 
-import anthropic
-
-from app.core.config import settings
 from app.core.database import get_supabase
+from app.core.llm import get_openai_async_client
 from app.schemas.requests import ChatRequest
 from app.schemas.responses import ChatResponse
 
 logger = logging.getLogger(__name__)
 
-# Tool that forces Claude to always return structured output.
+# Tool that forces the model to always return structured output.
 TOOLS = [
     {
-        "name": "format_response",
-        "description": "Always use this tool to return your response.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reply": {
-                    "type": "string",
-                    "description": "Your response to the agent's message",
+        "type": "function",
+        "function": {
+            "name": "format_response",
+            "description": "Always use this tool to return your response.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reply": {
+                        "type": "string",
+                        "description": "Your response to the agent's message",
+                    },
+                    "next_model": {
+                        "type": "string",
+                        "enum": ["general", "intentModel"],
+                        "description": (
+                            "Use 'general' if you answered fully. "
+                            "Use 'intentModel' if you need live property "
+                            "inventory data to answer properly."
+                        ),
+                    },
                 },
-                "next_model": {
-                    "type": "string",
-                    "enum": ["general", "intentModel"],
-                    "description": (
-                        "Use 'general' if you answered fully. "
-                        "Use 'intentModel' if you need live property "
-                        "inventory data to answer properly."
-                    ),
-                },
+                "required": ["reply", "next_model"],
             },
-            "required": ["reply", "next_model"],
         },
     }
 ]
@@ -175,37 +176,32 @@ async def handle_chat(
     system_prompt = _build_system_prompt(property_data)
 
     # -------------------------------------------------------------------------
-    # STEP E — Call Anthropic (tool_choice forces format_response every time)
+    # STEP E — Call OpenAI (tool_choice forces format_response every time)
     # -------------------------------------------------------------------------
-    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    client = get_openai_async_client()
 
-    response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=system_prompt,
+    response = await client.chat.completions.create(
+        model="gpt-5",
+        # max_tokens=1024,
+        messages=[{"role": "system", "content": system_prompt}] + trimmed_history,
         tools=TOOLS,
-        tool_choice={"type": "tool", "name": "format_response"},
-        messages=trimmed_history,
+        tool_choice={"type": "function", "function": {"name": "format_response"}},
     )
 
     # -------------------------------------------------------------------------
-    # STEP D (extraction) — Pull reply + next_model from tool use block
+    # STEP D (extraction) — Pull reply + next_model from tool call
     # -------------------------------------------------------------------------
-    tool_block = next(
-        (block for block in response.content if block.type == "tool_use"), None
-    )
-
-    if tool_block is not None:
-        reply = tool_block.input.get("reply", "")
-        next_model = tool_block.input.get("next_model", "general")
+    message = response.choices[0].message
+    if message.tool_calls:
+        tool_input = json.loads(message.tool_calls[0].function.arguments)
+        reply = tool_input.get("reply", "")
+        next_model = tool_input.get("next_model", "general")
     else:
         logger.warning(
-            "No tool_use block in response (stop_reason=%s); falling back.",
-            response.stop_reason,
+            "No tool_calls in response (finish_reason=%s); falling back.",
+            response.choices[0].finish_reason,
         )
-        raw_text = next(
-            (block.text for block in response.content if block.type == "text"), ""
-        )
+        raw_text = message.content or ""
         parsed = extract_json_from_response(raw_text)
         reply = parsed.get("reply", raw_text)
         next_model = parsed.get("next_model", "general")

@@ -7,12 +7,11 @@ and message content. No LLM calls here; this keeps routing cheap and fast.
 Falls back to the Haiku LLM classifier only when heuristics are ambiguous.
 The Haiku classifier can set BOTH needs_retrieval AND needs_kb.
 """
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-import anthropic
-
-from app.core.config import settings
+from app.core.llm import get_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -141,11 +140,99 @@ _KB_SIGNALS = frozenset(
 )
 
 
+# ── Parameter extraction constants ───────────────────────────────────────────
+_EXTRACTION_SYSTEM = (
+    "You are a parameter extraction assistant for a student property "
+    "search system (PBSA — Purpose Built Student Accommodation).\n\n"
+    "Extract any search parameter changes from the user message. "
+    "Return only fields that clearly changed or were newly mentioned. "
+    "Return empty object {} if nothing changed.\n\n"
+    "BUDGET RULES:\n"
+    "Extract any number mentioned in a price/rent/budget context.\n"
+    "Examples:\n"
+    '  "for 300"         → budget: 300\n'
+    '  "under 300"       → budget: 300\n'
+    '  "up to 300"       → budget: 300\n'
+    '  "300 a week"      → budget: 300\n'
+    '  "300 per week"    → budget: 300\n'
+    '  "budget of 300"   → budget: 300\n'
+    '  "cheaper, 150"    → budget: 150\n\n'
+    "ROOM TYPE RULES:\n"
+    "You have full knowledge of PBSA room types. Convert whatever the "
+    "user says into a normalised uppercase string with underscores. "
+    "Never return lowercase. Never return spaces.\n"
+    "Examples:\n"
+    '  "studios"              → room_type: "STUDIO"\n'
+    '  "twin studio"          → room_type: "TWIN_STUDIO"\n'
+    '  "en-suite"             → room_type: "ENSUITE"\n'
+    '  "non ensuite"          → room_type: "NON_ENSUITE"\n'
+    '  "shared room"          → room_type: "SHARED_ROOM"\n'
+    '  "private room"         → room_type: "PRIVATE_ROOM"\n'
+    '  "dorm"                 → room_type: "DORM"\n'
+    '  "1 bed"                → room_type: "ONE_BED"\n'
+    '  "2 bed"                → room_type: "TWO_BED"\n'
+    '  "3 bed"                → room_type: "THREE_BED"\n'
+    '  "entire place"         → room_type: "ENTIRE_PLACE"\n\n'
+    "CITY / UNIVERSITY / LEASE / INTAKE: extract if clearly mentioned.\n\n"
+    "Return JSON with only changed fields. No explanations."
+)
+
+_EXTRACTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "extract_params",
+        "description": "Extract changed search parameters from user message",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city":       {"type": "string"},
+                "university": {"type": "string"},
+                "budget":     {"type": "number"},
+                "room_type":  {"type": "string"},
+                "lease":      {"type": "number"},
+                "intake":     {"type": "string"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_EXTRACTION_PARAM_KEYS = frozenset({"city", "university", "budget", "room_type", "lease", "intake"})
+
+
+def _extract_params(user_message: str) -> dict:
+    """
+    Run gpt-4o-mini to extract any filter changes mentioned in the message text.
+    Returns only the fields that were clearly mentioned; returns {} if nothing changed.
+    Called when needs_retrieval=True so retrieval uses up-to-date filters.
+    """
+    try:
+        client = get_openai_client()
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=200,
+            messages=[
+                {"role": "system", "content": _EXTRACTION_SYSTEM},
+                {"role": "user",   "content": user_message},
+            ],
+            tools=[_EXTRACTION_TOOL],
+            tool_choice={"type": "function", "function": {"name": "extract_params"}},
+        )
+        raw = resp.choices[0].message.tool_calls[0].function.arguments
+        extracted = json.loads(raw)
+        return {k: v for k, v in extracted.items() if v is not None}
+    except Exception as e:
+        logger.error(f"[EXTRACTION] gpt-4o-mini extractor failed: {e}. Returning {{}}.")
+        return {}
+
+
 @dataclass
 class AgentPlan:
     needs_retrieval: bool
     needs_kb: bool
     reason: str
+    extracted_params: dict = field(default_factory=dict)
 
 
 def decide(
@@ -192,10 +279,12 @@ def decide(
     for trigger in _RETRIEVAL_TRIGGERS:
         if trigger in msg_lower:
             logger.info(f"[DECISION] trigger='{trigger}' → needs_retrieval=True")
+            extracted = _extract_params(user_message)
             return AgentPlan(
                 needs_retrieval=True,
                 needs_kb=False,
                 reason=f"Trigger keyword '{trigger}' detected — refresh supply data",
+                extracted_params=extracted,
             )
 
     # Rule 3: explicit no-retrieval signals
@@ -225,42 +314,45 @@ def decide(
 
 def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
     """
-    LLM fallback — uses Haiku with forced tool use to classify the intent.
+    LLM fallback — uses gpt-4o-mini with forced tool use to classify the intent.
     Only called when Python rules are inconclusive.
 
     The classifier decides BOTH data_required AND kb_required.
     """
-    import asyncio
+    trimmed = messages[-10:] if len(messages) > 10 else messages
+    # Strip extra fields (timestamp etc.) — only role+content
+    clean = [
+        {"role": m["role"], "content": m["content"]}
+        for m in trimmed
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    ]
 
-    async def _run():
-        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        trimmed = messages[-10:] if len(messages) > 10 else messages
-        # Strip extra fields (timestamp etc.) — Anthropic only accepts role+content
-        clean = [
-            {"role": m["role"], "content": m["content"]}
-            for m in trimmed
-            if m.get("role") in ("user", "assistant") and m.get("content")
-        ]
-        classifier_messages = clean + [{"role": "user", "content": user_message}]
+    system = (
+        "You are a routing assistant for a property recommendation system used by UniAcco sales agents.\n\n"
+        "You must decide TWO things:\n"
+        "1. data_required — does the user need FRESH property listings / prices / availability from the database?\n"
+        "   Set true if the user wants new/different properties, updated prices, or availability checks.\n"
+        "   Set false if the user is asking about properties already in the conversation.\n\n"
+        "2. kb_required — does the user need information from the knowledge base (sales techniques, "
+        "closing strategies, objection handling, booking process, payment policies, commission info, "
+        "eligibility criteria, escalation procedures, UniAcco processes)?\n"
+        "   Set true if the user is asking HOW to sell, close, handle objections, create urgency, "
+        "booking steps, payment options, refund policy, or any sales/process question.\n"
+        "   Set false if the user only needs property data or is chatting about specific listings.\n\n"
+        "IMPORTANT: Both can be true simultaneously (e.g., 'show me properties and tell me how to pitch them').\n\n"
+        "ADDITIONAL TASK — PARAMETER EXTRACTION:\n"
+        "If data_required=true, also extract any search parameter changes from the user message.\n"
+        "ROOM TYPE: normalise to UPPERCASE with underscores (e.g. STUDIO, ENSUITE, SHARED_ROOM, TWIN_STUDIO).\n"
+        "BUDGET: extract any number in a rent/price/budget context.\n"
+        "Only include fields that are clearly mentioned. Omit fields not mentioned."
+    )
 
-        system = (
-            "You are a routing assistant for a property recommendation system used by UniAcco sales agents.\n\n"
-            "You must decide TWO things:\n"
-            "1. data_required — does the user need FRESH property listings / prices / availability from the database?\n"
-            "   Set true if the user wants new/different properties, updated prices, or availability checks.\n"
-            "   Set false if the user is asking about properties already in the conversation.\n\n"
-            "2. kb_required — does the user need information from the knowledge base (sales techniques, "
-            "closing strategies, objection handling, booking process, payment policies, commission info, "
-            "eligibility criteria, escalation procedures, UniAcco processes)?\n"
-            "   Set true if the user is asking HOW to sell, close, handle objections, create urgency, "
-            "booking steps, payment options, refund policy, or any sales/process question.\n"
-            "   Set false if the user only needs property data or is chatting about specific listings.\n\n"
-            "IMPORTANT: Both can be true simultaneously (e.g., 'show me properties and tell me how to pitch them')."
-        )
-        tool = {
+    tool = {
+        "type": "function",
+        "function": {
             "name": "routing_decision",
-            "description": "Decide if property data and/or knowledge base are needed",
-            "input_schema": {
+            "description": "Decide if property data and/or knowledge base are needed, and extract any filter changes",
+            "parameters": {
                 "type": "object",
                 "properties": {
                     "data_required": {
@@ -278,44 +370,53 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
                         "type": "string",
                         "description": "One line explanation",
                     },
+                    "city":       {"type": "string", "description": "City if clearly mentioned"},
+                    "university": {"type": "string", "description": "University if clearly mentioned"},
+                    "budget":     {"type": "number", "description": "Budget/rent/price if mentioned"},
+                    "room_type":  {"type": "string", "description": "Room type in UPPERCASE_UNDERSCORE format"},
+                    "lease":      {"type": "number", "description": "Lease duration in weeks if mentioned"},
+                    "intake":     {"type": "string", "description": "Move-in date if mentioned"},
                 },
                 "required": ["data_required", "kb_required", "reason"],
             },
-        }
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
+        },
+    }
+
+    classifier_messages = (
+        [{"role": "system", "content": system}]
+        + clean
+        + [{"role": "user", "content": user_message}]
+    )
+
+    try:
+        client = get_openai_client()
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
             max_tokens=400,
-            system=system,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "routing_decision"},
             messages=classifier_messages,
+            tools=[tool],
+            tool_choice={"type": "function", "function": {"name": "routing_decision"}},
         )
-        result = resp.content[0].input
+        result = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
         data_required = result.get("data_required", False)
-        kb_required = result.get("kb_required", False)
-        reason = result.get("reason", "LLM classifier decision")
+        kb_required   = result.get("kb_required", False)
+        reason        = result.get("reason", "LLM classifier decision")
+        extracted_params = {
+            k: v for k, v in result.items()
+            if k in _EXTRACTION_PARAM_KEYS and v is not None
+        }
         logger.info(
-            f"[DECISION] Haiku classifier → data_required={data_required} "
-            f"kb_required={kb_required} reason='{reason}'"
+            f"[DECISION] gpt-4o-mini classifier → data_required={data_required} "
+            f"kb_required={kb_required} extracted={extracted_params} reason='{reason}'"
         )
         return AgentPlan(
             needs_retrieval=data_required,
             needs_kb=kb_required,
             reason=reason,
+            extracted_params=extracted_params,
         )
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, _run())
-                return future.result()
-        else:
-            return loop.run_until_complete(_run())
     except Exception as e:
-        logger.error(f"[DECISION] Haiku classifier failed: {e}. Defaulting needs_retrieval=False")
+        logger.error(f"[DECISION] gpt-4o-mini classifier failed: {e}. Defaulting needs_retrieval=False")
         return AgentPlan(
             needs_retrieval=False,
             needs_kb=False,

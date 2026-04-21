@@ -92,22 +92,36 @@ async def send_message(
         f"[CHAT] ── STEP 2: FILTERS ── "
         f"request_filters={request_filters} effective_filters={effective_filters}"
     )
-
     # ── 3. Detect filter changes ─────────────────────────────────────────────
     filters_changed = False
     changed_fields = {}
+
     if not is_first_message and request_filters:
         for key, new_val in request_filters.items():
             old_val = stored_filters.get(key)
             if old_val is not None and str(new_val) != str(old_val):
                 filters_changed = True
                 changed_fields[key] = {"old": old_val, "new": new_val}
-                logger.info(
-                    f"[CHAT] Filter changed: {key} '{old_val}' → '{new_val}'"
-                )
+                logger.info(f"[CHAT] Filter changed: {key} '{old_val}' → '{new_val}'")
 
     if filters_changed:
         logger.info(f"[CHAT] ── STEP 3: FILTER CHANGE DETECTED ── {changed_fields}")
+
+        # ✅ Persist ONLY when changed
+        logger.info("[CHAT] ── STEP 3.5: PERSIST FILTERS ── saving to DB")
+
+        updated_filters = {**stored_filters, **request_filters}
+
+        memory_service.update_conversation_filters(
+            conversation_id=conversation_id,
+            filters=updated_filters,
+        )
+
+        logger.info(f"[CHAT] Filters updated in DB: {updated_filters}")
+
+        # update local state
+        effective_filters = updated_filters
+
     else:
         logger.info("[CHAT] ── STEP 3: NO FILTER CHANGES ──")
 
@@ -116,6 +130,7 @@ async def send_message(
     kb_text = ""
     data_fetched = False
     decision_reason = ""
+    extracted_changes = {}
 
     logger.info(f"[CHAT] ── STEP 4: ROUTING ── enquiry_type={enquiry_type}")
 
@@ -134,8 +149,19 @@ async def send_message(
             f"needs_kb={plan.needs_kb} reason='{plan.reason}'"
         )
 
+        # Apply extracted params from prompt text to effective_filters.
+        # Priority: stored_filters < extracted_params < request_body (UI selections win).
+        extracted_changes = plan.extracted_params
+        logger.info(f"[FILTERS] Extracted from prompt: {extracted_changes}")
+
+        if extracted_changes:
+            effective_filters = {**stored_filters, **extracted_changes, **request_filters}
+
+        logger.info(f"[FILTERS] effective_filters before retrieval: {effective_filters}")
+
         if plan.needs_retrieval:
             logger.info("[CHAT] ── STEP 4b: RETRIEVAL ── fetching property data...")
+            
             property_data, data_fetched = retrieval_service.fetch_properties(
                 effective_filters
             )
@@ -189,7 +215,7 @@ async def send_message(
 
     memory_service.save_messages(conversation_id, updated_messages)
 
-    if request_filters:
+    if request_filters or extracted_changes:
         memory_service.update_filters(conversation_id, effective_filters)
 
     # Build rich context_flags — includes which prompt triggered each flag
