@@ -93,7 +93,7 @@ async def get_current_user(
         supabase = get_supabase()
         result = await asyncio.to_thread(
             lambda: supabase.table("users")
-            .select("id, name, email")
+            .select("id, name, email, role")
             .eq("id", user_id)
             .execute()
         )

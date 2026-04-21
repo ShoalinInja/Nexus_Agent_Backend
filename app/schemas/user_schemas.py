@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, EmailStr
 
 
@@ -6,6 +8,7 @@ class UserData(BaseModel):
     name: str
     email: str
     token: str
+    role: Optional[str] = None
 
 # ✅ Request Schema
 class UserRegisterRequest(BaseModel):
