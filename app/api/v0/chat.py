@@ -92,7 +92,7 @@ async def send_message(
         f"[CHAT] ── STEP 2: FILTERS ── "
         f"request_filters={request_filters} effective_filters={effective_filters}"
     )
-    # ── 3. Detect filter changes ─────────────────────────────────────────────
+    # ── 3. Detect filter changes (request_filters vs stored) ────────────────
     filters_changed = False
     changed_fields = {}
 
@@ -106,24 +106,59 @@ async def send_message(
 
     if filters_changed:
         logger.info(f"[CHAT] ── STEP 3: FILTER CHANGE DETECTED ── {changed_fields}")
-
-        # ✅ Persist ONLY when changed
         logger.info("[CHAT] ── STEP 3.5: PERSIST FILTERS ── saving to DB")
-
         updated_filters = {**stored_filters, **request_filters}
-
-        memory_service.update_conversation_filters(
-            conversation_id=conversation_id,
-            filters=updated_filters,
-        )
-
+        memory_service.update_filters(conversation_id, updated_filters)
         logger.info(f"[CHAT] Filters updated in DB: {updated_filters}")
-
-        # update local state
         effective_filters = updated_filters
-
     else:
         logger.info("[CHAT] ── STEP 3: NO FILTER CHANGES ──")
+
+    # ── 3b. Frontend filter diff (current_filters vs stored) ────────────────
+    # The frontend sends its full dropdown state on every request.
+    # If any value differs from what's stored (e.g. user edited a dropdown
+    # between turns without sending via PATCH /filters), we treat it as a
+    # filter change and force a fresh supply fetch.
+    force_refresh = False
+    frontend_filter_diff: dict = {}
+
+    def _normalise(v):
+        """Comparable form: strip + lowercase strings, float for numbers."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v.strip().lower()
+        return float(v) if isinstance(v, (int, float)) else v
+
+    if body.current_filters:
+        for key in ("city", "university", "budget", "intake", "lease", "room_type"):
+            incoming_val = body.current_filters.get(key)
+            stored_val = stored_filters.get(key)
+            if _normalise(incoming_val) != _normalise(stored_val):
+                if incoming_val is not None:
+                    frontend_filter_diff[key] = {
+                        "from": stored_val,
+                        "to": incoming_val,
+                    }
+                    effective_filters[key] = incoming_val
+
+    if frontend_filter_diff:
+        force_refresh = True
+        logger.info(f"[FILTERS] Frontend filter diff detected: {frontend_filter_diff}")
+        logger.info("[FILTERS] Forcing supply data refresh")
+        # Persist the updated filters and mark supply stale immediately
+        memory_service.update_filters(conversation_id, effective_filters)
+        memory_service.update_supply_stale(conversation_id, stale=True)
+    else:
+        # Also honour the stale flag set by a prior PATCH /filters call
+        if convo.get("supply_data_stale"):
+            force_refresh = True
+            logger.info("[FILTERS] supply_data_stale=True — forcing refresh")
+
+    logger.info(
+        f"[FILTERS] force_refresh={force_refresh} "
+        f"effective_filters={effective_filters}"
+    )
 
     # ── 4. Route by enquiry type ─────────────────────────────────────────────
     property_data = ""
@@ -131,6 +166,8 @@ async def send_message(
     data_fetched = False
     decision_reason = ""
     extracted_changes = {}
+    supply_data_count = 0
+    last_supply_fetched_at: str | None = None
 
     logger.info(f"[CHAT] ── STEP 4: ROUTING ── enquiry_type={enquiry_type}")
 
@@ -149,6 +186,11 @@ async def send_message(
             f"needs_kb={plan.needs_kb} reason='{plan.reason}'"
         )
 
+        # force_refresh overrides classifier — frontend filters changed or stale flag set
+        if force_refresh and not plan.needs_retrieval:
+            plan.needs_retrieval = True
+            logger.info("[ROUTING] force_refresh override — needs_retrieval set to True")
+
         # Apply extracted params from prompt text to effective_filters.
         # Priority: stored_filters < extracted_params < request_body (UI selections win).
         extracted_changes = plan.extracted_params
@@ -161,14 +203,22 @@ async def send_message(
 
         if plan.needs_retrieval:
             logger.info("[CHAT] ── STEP 4b: RETRIEVAL ── fetching property data...")
-            
             property_data, data_fetched = retrieval_service.fetch_properties(
                 effective_filters
             )
+            supply_data_count = len(property_data) if data_fetched and isinstance(property_data, list) else 0
             logger.info(
                 f"[CHAT] ── STEP 4b: RETRIEVAL DONE ── "
-                f"data_fetched={data_fetched} chars={len(property_data)}"
+                f"data_fetched={data_fetched} count={supply_data_count}"
             )
+            if data_fetched:
+                last_supply_fetched_at = memory_service.update_last_supply_fetched(
+                    conversation_id
+                )
+                logger.info(
+                    f"[CHAT] Supply stale flag cleared, "
+                    f"last_supply_fetched_at={last_supply_fetched_at}"
+                )
         else:
             logger.info("[CHAT] ── STEP 4b: RETRIEVAL SKIPPED ──")
 
@@ -256,6 +306,9 @@ async def send_message(
         conversation_id=conversation_id,
         reply=reply,
         data_fetched=data_fetched,
+        filters_updated=bool(frontend_filter_diff),
+        supply_data_count=supply_data_count,
+        last_supply_fetched_at=last_supply_fetched_at,
     )
 
 

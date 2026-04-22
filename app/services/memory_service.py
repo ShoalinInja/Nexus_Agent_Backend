@@ -199,6 +199,36 @@ def update_context_flags(conversation_id: str, flags: dict) -> None:
     logger.info(f"[MEMORY] context_flags updated for {conversation_id}: {flags}")
 
 
+def update_supply_stale(conversation_id: str, stale: bool) -> None:
+    """
+    Set the supply_data_stale flag on a conversation row.
+    Called from the PATCH /filters endpoint when filters change.
+    """
+    supabase = get_supabase()
+    supabase.table(TABLE).update(
+        {"supply_data_stale": stale, "updated_at": _now()}
+    ).eq("conversation_id", conversation_id).execute()
+    logger.info(f"[MEMORY] supply_data_stale={stale} for {conversation_id}")
+
+
+def update_last_supply_fetched(conversation_id: str) -> str:
+    """
+    Record a successful supply fetch: clears supply_data_stale and stamps
+    last_supply_fetched_at. Returns the ISO timestamp that was written.
+    """
+    supabase = get_supabase()
+    now = _now()
+    supabase.table(TABLE).update(
+        {
+            "supply_data_stale": False,
+            "last_supply_fetched_at": now,
+            "updated_at": now,
+        }
+    ).eq("conversation_id", conversation_id).execute()
+    logger.info(f"[MEMORY] last_supply_fetched_at stamped for {conversation_id}")
+    return now
+
+
 def update_last_intent(conversation_id: str, intent: dict) -> None:
     """
     Store the latest extracted intent / filters snapshot.

@@ -6,6 +6,7 @@ from app.api.v0.user_route import router as user_router
 from app.api.v0.chat import router as chat_router
 from app.api.v0.conversation import router as conversation_router
 from app.api.v0.universities import router as universities_router
+from app.api.v0.filters import router as filters_router
 
 v0_router = APIRouter()
 v0_router.include_router(intent_router)
@@ -14,3 +15,4 @@ v0_router.include_router(user_router)
 v0_router.include_router(chat_router)
 v0_router.include_router(conversation_router)
 v0_router.include_router(universities_router)
+v0_router.include_router(filters_router)

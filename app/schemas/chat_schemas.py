@@ -2,6 +2,24 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+# ── Filter schemas ────────────────────────────────────────────────────────────
+
+class FiltersResponse(BaseModel):
+    conversation_id: str
+    filters: dict
+    last_supply_fetched_at: Optional[str] = None
+    supply_data_stale: bool = False
+
+
+class FiltersUpdateRequest(BaseModel):
+    city: Optional[str] = None
+    university: Optional[str] = None
+    budget: Optional[float] = None
+    intake: Optional[str] = None
+    lease: Optional[float] = None
+    room_type: Optional[str] = None
+
+
 # ── Conversation schemas ──────────────────────────────────────────────────────
 
 class ConversationCreateRequest(BaseModel):
@@ -46,12 +64,18 @@ class ChatSendRequest(BaseModel):
     intake: Optional[str] = None     # dd/mm/yyyy
     lease: Optional[float] = None    # weeks
     room_type: Optional[str] = None
+    # Full dropdown state on every request — used to detect frontend filter changes.
+    # Keys: city, university, budget, intake, lease, room_type
+    current_filters: Optional[dict] = None
 
 
 class ChatSendResponse(BaseModel):
     conversation_id: str
     reply: str
     data_fetched: bool
+    filters_updated: bool = False
+    supply_data_count: int = 0
+    last_supply_fetched_at: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
