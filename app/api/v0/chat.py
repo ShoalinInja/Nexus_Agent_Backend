@@ -41,11 +41,11 @@ async def send_message(
     """
     user_id = str(current_user["id"])
     conversation_id = body.conversation_id
-    logger.info(
-        f"[CHAT] ═══ NEW REQUEST ═══ "
-        f"conversation_id={conversation_id} user_id={user_id}"
-    )
-    logger.info(f"[CHAT] user_prompt='{body.message[:120]}...'")
+    # logger.info(
+    #     f"[CHAT] ═══ NEW REQUEST ═══ "
+    #     f"conversation_id={conversation_id} user_id={user_id}"
+    # )
+    # logger.info(f"[CHAT] user_prompt='{body.message[:120]}...'")
 
     # ── 1. Load conversation ─────────────────────────────────────────────────
     convo = memory_service.get_conversation(conversation_id)
@@ -68,11 +68,11 @@ async def send_message(
         or "property_recommendation"
     )
 
-    logger.info(
-        f"[CHAT] ── STEP 1: LOAD ── "
-        f"enquiry_type={enquiry_type} is_first_message={is_first_message} "
-        f"existing_messages={msg_count} stored_filters={stored_filters}"
-    )
+    # logger.info(
+    #     f"[CHAT] ── STEP 1: LOAD ── "
+    #     f"enquiry_type={enquiry_type} is_first_message={is_first_message} "
+    #     f"existing_messages={msg_count} stored_filters={stored_filters}"
+    # )
 
     # ── 2. Merge filters (request overrides stored) ──────────────────────────
     request_filters = {
@@ -88,10 +88,10 @@ async def send_message(
         if v is not None
     }
     effective_filters = {**stored_filters, **request_filters}
-    logger.info(
-        f"[CHAT] ── STEP 2: FILTERS ── "
-        f"request_filters={request_filters} effective_filters={effective_filters}"
-    )
+    # logger.info(
+    #     f"[CHAT] ── STEP 2: FILTERS ── "
+    #     f"request_filters={request_filters} effective_filters={effective_filters}"
+    # )
     # ── 3. Detect filter changes (request_filters vs stored) ────────────────
     filters_changed = False
     changed_fields = {}
@@ -102,14 +102,14 @@ async def send_message(
             if old_val is not None and str(new_val) != str(old_val):
                 filters_changed = True
                 changed_fields[key] = {"old": old_val, "new": new_val}
-                logger.info(f"[CHAT] Filter changed: {key} '{old_val}' → '{new_val}'")
+                # logger.info(f"[CHAT] Filter changed: {key} '{old_val}' → '{new_val}'")
 
     if filters_changed:
-        logger.info(f"[CHAT] ── STEP 3: FILTER CHANGE DETECTED ── {changed_fields}")
-        logger.info("[CHAT] ── STEP 3.5: PERSIST FILTERS ── saving to DB")
+        # logger.info(f"[CHAT] ── STEP 3: FILTER CHANGE DETECTED ── {changed_fields}")
+        # logger.info("[CHAT] ── STEP 3.5: PERSIST FILTERS ── saving to DB")
         updated_filters = {**stored_filters, **request_filters}
         memory_service.update_filters(conversation_id, updated_filters)
-        logger.info(f"[CHAT] Filters updated in DB: {updated_filters}")
+        # logger.info(f"[CHAT] Filters updated in DB: {updated_filters}")
         effective_filters = updated_filters
     else:
         logger.info("[CHAT] ── STEP 3: NO FILTER CHANGES ──")
@@ -144,8 +144,8 @@ async def send_message(
 
     if frontend_filter_diff:
         force_refresh = True
-        logger.info(f"[FILTERS] Frontend filter diff detected: {frontend_filter_diff}")
-        logger.info("[FILTERS] Forcing supply data refresh")
+        # logger.info(f"[FILTERS] Frontend filter diff detected: {frontend_filter_diff}")
+        # logger.info("[FILTERS] Forcing supply data refresh")
         # Persist the updated filters and mark supply stale immediately
         memory_service.update_filters(conversation_id, effective_filters)
         memory_service.update_supply_stale(conversation_id, stale=True)
@@ -153,12 +153,12 @@ async def send_message(
         # Also honour the stale flag set by a prior PATCH /filters call
         if convo.get("supply_data_stale"):
             force_refresh = True
-            logger.info("[FILTERS] supply_data_stale=True — forcing refresh")
+            # logger.info("[FILTERS] supply_data_stale=True — forcing refresh")
 
-    logger.info(
-        f"[FILTERS] force_refresh={force_refresh} "
-        f"effective_filters={effective_filters}"
-    )
+    # logger.info(
+    #     f"[FILTERS] force_refresh={force_refresh} "
+    #     f"effective_filters={effective_filters}"
+    # )
 
     # ── 4. Route by enquiry type ─────────────────────────────────────────────
     property_data = ""
@@ -169,7 +169,7 @@ async def send_message(
     supply_data_count = 0
     last_supply_fetched_at: str | None = None
 
-    logger.info(f"[CHAT] ── STEP 4: ROUTING ── enquiry_type={enquiry_type}")
+    # logger.info(f"[CHAT] ── STEP 4: ROUTING ── enquiry_type={enquiry_type}")
 
     if enquiry_type == "property_recommendation":
         # Full pipeline: decision → retrieval → KB
@@ -180,74 +180,74 @@ async def send_message(
             filters_changed=filters_changed,
         )
         decision_reason = plan.reason
-        logger.info(
-            f"[CHAT] ── STEP 4a: DECISION ── "
-            f"needs_retrieval={plan.needs_retrieval} "
-            f"needs_kb={plan.needs_kb} reason='{plan.reason}'"
-        )
+        # logger.info(
+        #     f"[CHAT] ── STEP 4a: DECISION ── "
+        #     f"needs_retrieval={plan.needs_retrieval} "
+        #     f"needs_kb={plan.needs_kb} reason='{plan.reason}'"
+        # )
 
         # force_refresh overrides classifier — frontend filters changed or stale flag set
         if force_refresh and not plan.needs_retrieval:
             plan.needs_retrieval = True
-            logger.info("[ROUTING] force_refresh override — needs_retrieval set to True")
+            # logger.info("[ROUTING] force_refresh override — needs_retrieval set to True")
 
         # Apply extracted params from prompt text to effective_filters.
         # Priority: stored_filters < extracted_params < request_body (UI selections win).
         extracted_changes = plan.extracted_params
-        logger.info(f"[FILTERS] Extracted from prompt: {extracted_changes}")
+        # logger.info(f"[FILTERS] Extracted from prompt: {extracted_changes}")
 
         if extracted_changes:
             effective_filters = {**stored_filters, **extracted_changes, **request_filters}
 
-        logger.info(f"[FILTERS] effective_filters before retrieval: {effective_filters}")
+        # logger.info(f"[FILTERS] effective_filters before retrieval: {effective_filters}")
 
         if plan.needs_retrieval:
-            logger.info("[CHAT] ── STEP 4b: RETRIEVAL ── fetching property data...")
+            # logger.info("[CHAT] ── STEP 4b: RETRIEVAL ── fetching property data...")
             property_data, data_fetched = retrieval_service.fetch_properties(
                 effective_filters
             )
             supply_data_count = len(property_data) if data_fetched and isinstance(property_data, list) else 0
-            logger.info(
-                f"[CHAT] ── STEP 4b: RETRIEVAL DONE ── "
-                f"data_fetched={data_fetched} count={supply_data_count}"
-            )
+            # logger.info(
+            #     f"[CHAT] ── STEP 4b: RETRIEVAL DONE ── "
+            #     f"data_fetched={data_fetched} count={supply_data_count}"
+            # )
             if data_fetched:
                 last_supply_fetched_at = memory_service.update_last_supply_fetched(
                     conversation_id
                 )
-                logger.info(
-                    f"[CHAT] Supply stale flag cleared, "
-                    f"last_supply_fetched_at={last_supply_fetched_at}"
-                )
+                # logger.info(
+                #     f"[CHAT] Supply stale flag cleared, "
+                #     f"last_supply_fetched_at={last_supply_fetched_at}"
+                # )
         else:
             logger.info("[CHAT] ── STEP 4b: RETRIEVAL SKIPPED ──")
 
         if plan.needs_kb:
-            logger.info("[CHAT] ── STEP 4c: KB ── loading knowledge base...")
+            # logger.info("[CHAT] ── STEP 4c: KB ── loading knowledge base...")
             kb_text = knowledge_service.load_kb()
-            logger.info(
-                f"[CHAT] ── STEP 4c: KB DONE ── chars={len(kb_text)}"
-            )
+            # logger.info(
+            #     f"[CHAT] ── STEP 4c: KB DONE ── chars={len(kb_text)}"
+            # )
         else:
             logger.info("[CHAT] ── STEP 4c: KB SKIPPED ──")
 
     elif enquiry_type == "sales_assist":
         decision_reason = "sales_assist mode — always load KB"
-        logger.info("[CHAT] ── STEP 4: SALES ASSIST → loading KB only ──")
+        # logger.info("[CHAT] ── STEP 4: SALES ASSIST → loading KB only ──")
         kb_text = knowledge_service.load_kb()
-        logger.info(f"[CHAT] KB loaded: {len(kb_text)} chars")
+        # logger.info(f"[CHAT] KB loaded: {len(kb_text)} chars")
 
     elif enquiry_type == "general_question":
         decision_reason = "general_question mode — response agent only"
-        logger.info("[CHAT] ── STEP 4: GENERAL QUESTION → response only ──")
+        # logger.info("[CHAT] ── STEP 4: GENERAL QUESTION → response only ──")
 
     # ── 5. Response Agent ────────────────────────────────────────────────────
-    logger.info(
-        f"[CHAT] ── STEP 5: RESPONSE AGENT ── "
-        f"property_data={'yes' if property_data else 'no'} "
-        f"kb={'yes' if kb_text else 'no'} "
-        f"history_msgs={len(messages)}"
-    )
+    # logger.info(
+    #     f"[CHAT] ── STEP 5: RESPONSE AGENT ── "
+    #     f"property_data={'yes' if property_data else 'no'} "
+    #     f"kb={'yes' if kb_text else 'no'} "
+    #     f"history_msgs={len(messages)}"
+    # )
     reply = await response_service.generate_response(
         user_prompt=body.message,
         messages=messages,
@@ -255,7 +255,7 @@ async def send_message(
         kb_text=kb_text,
         filters=effective_filters,
     )
-    logger.info(f"[CHAT] ── STEP 5: RESPONSE DONE ── reply_chars={len(reply)}")
+    # logger.info(f"[CHAT] ── STEP 5: RESPONSE DONE ── reply_chars={len(reply)}")
 
     # ── 6. Persist: messages + filters + context_flags ───────────────────────
     now = datetime.now(timezone.utc).isoformat()
@@ -291,16 +291,16 @@ async def send_message(
             "timestamp": now,
         })
 
-    logger.info(
-        f"[CHAT] ── STEP 6: PERSIST DONE ── "
-        f"total_messages={len(updated_messages)} "
-        f"context_flags={context_flags}"
-    )
-    logger.info(
-        f"[CHAT] ═══ REQUEST COMPLETE ═══ "
-        f"data_fetched={data_fetched} used_kb={bool(kb_text)} "
-        f"enquiry_type={enquiry_type}"
-    )
+    # logger.info(
+    #     f"[CHAT] ── STEP 6: PERSIST DONE ── "
+    #     f"total_messages={len(updated_messages)} "
+    #     f"context_flags={context_flags}"
+    # )
+    # logger.info(
+    #     f"[CHAT] ═══ REQUEST COMPLETE ═══ "
+    #     f"data_fetched={data_fetched} used_kb={bool(kb_text)} "
+    #     f"enquiry_type={enquiry_type}"
+    # )
 
     return ChatSendResponse(
         conversation_id=conversation_id,
@@ -321,7 +321,7 @@ async def get_chat_history(
     Return the full message history for a conversation.
     """
     user_id = str(current_user["id"])
-    logger.info(f"[CHAT] history conversation_id={conversation_id} user_id={user_id}")
+    # logger.info(f"[CHAT] history conversation_id={conversation_id} user_id={user_id}")
 
     convo = memory_service.get_conversation(conversation_id)
     if not convo:

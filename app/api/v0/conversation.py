@@ -28,7 +28,7 @@ async def create_conversation(
     """
     user_id = str(current_user["id"])
     email = current_user.get("email", "")
-    logger.info(f"[CONVERSATION] create user_id={user_id}")
+    # logger.info(f"[CONVERSATION] create user_id={user_id}")
 
     conversation_id = memory_service.create_conversation(
         user_id=user_id,
@@ -53,7 +53,7 @@ async def list_conversations(
     newest first, with a short preview derived from the first message.
     """
     user_id = str(current_user["id"])
-    logger.info(f"[CONVERSATION] list user_id={user_id}")
+    # logger.info(f"[CONVERSATION] list user_id={user_id}")
 
     rows = memory_service.list_conversations(user_id)
     items = [ConversationItem(**row) for row in rows]
@@ -71,7 +71,7 @@ async def delete_conversation(
     - Has messages → soft delete (is_deleted=True, row preserved)
     """
     user_id = str(current_user["id"])
-    logger.info(f"[CONVERSATION] delete conversation_id={conversation_id} user_id={user_id}")
+    # logger.info(f"[CONVERSATION] delete conversation_id={conversation_id} user_id={user_id}")
 
     convo = memory_service.get_conversation(conversation_id)
     if not convo:

@@ -16,9 +16,9 @@ async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquir
 
     # ── STEP 1: Log request ──────────────────────────────────────────────────
 
-    logger.info("=" * 60)
-    logger.info(f"[ENQUIRY] chatId={req.chatId} userId={req.userId}")
-    logger.info(f"[ENQUIRY] prompt='{req.prompt}'")
+    # logger.info("=" * 60)
+    # logger.info(f"[ENQUIRY] chatId={req.chatId} userId={req.userId}")
+    # logger.info(f"[ENQUIRY] prompt='{req.prompt}'")
 
     # ── STEP 2: Load session from Supabase ───────────────────────────────────
 
@@ -43,9 +43,9 @@ async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquir
             "lease":      session.get("lease"),
             "room_type":  session.get("room_type"),
         }
-        logger.info(f"[SESSION] Found existing session. "
-                    f"Messages count: {len(messages)}")
-        logger.info(f"[SESSION] Stored params: {session_params}")
+        # logger.info(f"[SESSION] Found existing session. "
+        #             f"Messages count: {len(messages)}")
+        # logger.info(f"[SESSION] Stored params: {session_params}")
     else:
         logger.info(f"[SESSION] No existing session found.")
 
@@ -56,10 +56,10 @@ async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquir
 
     should_force_data_fetch = is_first_request and is_empty_prompt
 
-    logger.info(f"[ENQUIRY] is_first_request={is_first_request}")
+    # logger.info(f"[ENQUIRY] is_first_request={is_first_request}")
 
     if not result.data and not is_first_request:
-        logger.warning("[SESSION] Follow-up with no existing session.")
+        # logger.warning("[SESSION] Follow-up with no existing session.")
         raise HTTPException(
             status_code=400,
             detail="No session found for this chatId. "
@@ -75,7 +75,7 @@ async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquir
         "lease":      req.lease      or session_params.get("lease"),
         "room_type":  req.room_type  or session_params.get("room_type"),
     }
-    logger.info(f"[PARAMS] Effective params: {effective_params}")
+    # logger.info(f"[PARAMS] Effective params: {effective_params}")
 
     # ── STEP 3: Mini Intent Classifier (gpt-4o-mini) ─────────────────────────
 
@@ -153,12 +153,12 @@ When params change, data_required should be true.
 
     # FORCE DATA FETCH FOR EMPTY FIRST MESSAGE — skip classifier
     if should_force_data_fetch:
-        logger.info("[OVERRIDE] First empty message → forcing data fetch")
+        # logger.info("[OVERRIDE] First empty message → forcing data fetch")
         data_required = True
         classifier_reason = "First empty message — auto fetch property data"
         classifier_result = {}
     else:
-        logger.info("[CLASSIFIER] Running mini intent classifier...")
+        # logger.info("[CLASSIFIER] Running mini intent classifier...")
 
         openai_client = get_openai_async_client()
 
@@ -187,8 +187,8 @@ When params change, data_required should be true.
         data_required = classifier_result.get("data_required", True)
         classifier_reason = classifier_result.get("reason", "")
 
-    logger.info(f"[CLASSIFIER] data_required={data_required}")
-    logger.info(f"[CLASSIFIER] reason='{classifier_reason}'")
+    # logger.info(f"[CLASSIFIER] data_required={data_required}")
+    # logger.info(f"[CLASSIFIER] reason='{classifier_reason}'")
 
     # ── STEP 3B: Apply any parameter changes detected by classifier ──────────
     updated_params = classifier_result.get("updated_params", {}) if not should_force_data_fetch else {}
@@ -197,7 +197,7 @@ When params change, data_required should be true.
             if value is not None:
                 old_value = effective_params.get(key)
                 effective_params[key] = value
-                logger.info(f"[PARAMS UPDATE] {key}: {old_value} → {value}")
+                # logger.info(f"[PARAMS UPDATE] {key}: {old_value} → {value}")
 
         # Save updated params to Supabase
         update_payload = {k: v for k, v in updated_params.items() if v is not None}
@@ -206,13 +206,13 @@ When params change, data_required should be true.
             .update(update_payload) \
             .eq("chat_id", req.chatId) \
             .execute()
-        logger.info(f"[PARAMS UPDATE] Saved {len(update_payload)-1} param changes to DB")
+        # logger.info(f"[PARAMS UPDATE] Saved {len(update_payload)-1} param changes to DB")
 
         # Force data re-fetch when params change
         if not data_required:
             data_required = True
             classifier_reason = f"Parameter changes detected: {list(updated_params.keys())} — re-fetching data"
-            logger.info("[PARAMS UPDATE] Forcing data_required=True due to param changes")
+            # logger.info("[PARAMS UPDATE] Forcing data_required=True due to param changes")
     else:
         logger.info("[PARAMS UPDATE] No parameter changes detected")
 
@@ -222,7 +222,7 @@ When params change, data_required should be true.
     data_fetched = False
 
     if data_required:
-        logger.info("[DATA FETCH] Fetching supply data from Supabase RPC...")
+        # logger.info("[DATA FETCH] Fetching supply data from Supabase RPC...")
 
         try:
             # Convert intake from dd/mm/yyyy to YYYY-MM-DD
@@ -264,7 +264,7 @@ When params change, data_required should be true.
                 # "w_lease": 5,
                 # "w_room_type": 3,
             }
-            logger.info(f"[DATA FETCH] RPC payload → {rpc_payload}")
+            # logger.info(f"[DATA FETCH] RPC payload → {rpc_payload}")
 
             rpc_response = supabase.rpc(
                 "get_property_suggestions_test",
@@ -288,8 +288,8 @@ When params change, data_required should be true.
                         f"   Amenities: {p.get('amenities', 'N/A')}\n"
                     )
                 property_data_text = "\n".join(lines)
-                logger.info(f"[DATA FETCH] Property data formatted. "
-                            f"Characters: {len(property_data_text)}")
+                # logger.info(f"[DATA FETCH] Property data formatted. "
+                #             f"Characters: {len(property_data_text)}")
             else:
                 logger.warning("[DATA FETCH] RPC returned 0 properties. "
                                "Using fallback message.")
@@ -309,7 +309,7 @@ When params change, data_required should be true.
 
     # ── STEP 5: Build Property Agent System Prompt ───────────────────────────
 
-    logger.info("[AGENT] Building property agent prompt...")
+    # logger.info("[AGENT] Building property agent prompt...")
 
     system_parts = [
         "You are a specialist property recommendation agent for UniAcco, "
@@ -342,14 +342,14 @@ When params change, data_required should be true.
         )
 
     agent_system_prompt = "\n".join(system_parts)
-    logger.info(f"[AGENT] System prompt length: "
-                f"{len(agent_system_prompt)} characters")
+    # logger.info(f"[AGENT] System prompt length: "
+    #             f"{len(agent_system_prompt)} characters")
 
     # ── STEP 6: Call Property Agent (gpt-5) ──────────────────────────────────
 
-    logger.info("[AGENT] Calling property agent LLM...")
+    # logger.info("[AGENT] Calling property agent LLM...")
 
-    logger.info(f"[AGENT] Sending {len(trimmed_history) + 1} messages to LLM")
+    # logger.info(f"[AGENT] Sending {len(trimmed_history) + 1} messages to LLM")
 
     if not should_force_data_fetch:
         # openai_client already created above
@@ -372,12 +372,12 @@ When params change, data_required should be true.
     )
 
     reply = agent_response.choices[0].message.content
-    logger.info(f"[AGENT] Response received. Length: {len(reply)} characters")
-    logger.info(f"[AGENT] Reply preview: '{reply[:100]}...'")
+    # logger.info(f"[AGENT] Response received. Length: {len(reply)} characters")
+    # logger.info(f"[AGENT] Reply preview: '{reply[:100]}...'")
 
     # ── STEP 7: Append messages and save session ─────────────────────────────
 
-    logger.info("[SESSION] Saving messages to DB...")
+    # logger.info("[SESSION] Saving messages to DB...")
 
     now = datetime.utcnow().isoformat()
     user_msg = {"role": "user", "content": req.prompt, "timestamp": now}
@@ -393,9 +393,9 @@ When params change, data_required should be true.
         "messages":     updated_messages,
         "updated_at":   now,
     }
-    logger.info(f"[SESSION] DB payload prompt='{upsert_payload['prompt']}' "
-                f"chat_id={upsert_payload['chat_id']} "
-                f"user_id={upsert_payload['user_id']}")
+    # logger.info(f"[SESSION] DB payload prompt='{upsert_payload['prompt']}' "
+    #             f"chat_id={upsert_payload['chat_id']} "
+    #             f"user_id={upsert_payload['user_id']}")
 
     if is_first_request:
         upsert_payload.update({
@@ -411,8 +411,8 @@ When params change, data_required should be true.
         .upsert(upsert_payload, on_conflict="chat_id") \
         .execute()
 
-    logger.info(f"[SESSION] Saved. Total messages: {len(updated_messages)}")
-    logger.info("=" * 60)
+    # logger.info(f"[SESSION] Saved. Total messages: {len(updated_messages)}")
+    # logger.info("=" * 60)
 
     return PropertyEnquiryResponse(
         chat_id=req.chatId,
