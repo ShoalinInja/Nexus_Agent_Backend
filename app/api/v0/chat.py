@@ -10,6 +10,7 @@ from app.schemas.chat_schemas import (
     ChatSendResponse,
 )
 from app.services import (
+    credit_service,
     decision_service,
     knowledge_service,
     memory_service,
@@ -54,6 +55,13 @@ async def send_message(
 
     if str(convo.get("user_id")) != user_id:
         raise HTTPException(status_code=403, detail="Not authorised")
+
+    # ── 1b. Credit check — must happen before any heavy processing ───────────
+    credits_before = credit_service.get_user_credits(user_id)
+    if credits_before is None or credits_before <= 0:
+        logger.warning(f"[CREDITS] Insufficient credits for user_id={user_id} credits={credits_before}")
+        raise HTTPException(status_code=402, detail="Insufficient credits")
+    logger.info(f"[CREDITS] Pre-request balance: user_id={user_id} credits={credits_before}")
 
     messages: list[dict] = convo.get("messages") or []
     stored_filters: dict = convo.get("filters") or {}
@@ -302,6 +310,24 @@ async def send_message(
     #     f"enquiry_type={enquiry_type}"
     # )
 
+    # ── 7. Deduct credit — only reached on a fully successful response ────────
+    credits_remaining: int | None = None
+    try:
+        credits_remaining = credit_service.deduct_user_credits(user_id, amount=1)
+        # Fallback: compute locally if RPC returned no balance
+        if credits_remaining is None:
+            credits_remaining = credits_before - 1
+        logger.info(
+            f"[CREDITS] Deduction successful: user_id={user_id} "
+            f"before={credits_before} after={credits_remaining}"
+        )
+    except Exception as exc:
+        # Never break the response — credit deduction failure is non-fatal
+        logger.error(
+            f"[CREDITS] Deduction FAILED for user_id={user_id}: {exc}",
+            exc_info=True,
+        )
+
     return ChatSendResponse(
         conversation_id=conversation_id,
         reply=reply,
@@ -309,6 +335,7 @@ async def send_message(
         filters_updated=bool(frontend_filter_diff),
         supply_data_count=supply_data_count,
         last_supply_fetched_at=last_supply_fetched_at,
+        credits_remaining=credits_remaining,
     )
 
 

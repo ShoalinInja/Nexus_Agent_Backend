@@ -76,6 +76,7 @@ class ChatSendResponse(BaseModel):
     filters_updated: bool = False
     supply_data_count: int = 0
     last_supply_fetched_at: Optional[str] = None
+    credits_remaining: Optional[int] = None  # balance after this request
 
 
 class ChatMessage(BaseModel):

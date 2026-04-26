@@ -151,6 +151,7 @@ async def login_user(email: str, password: str) -> dict:
             "email": user["email"],
             "token": token,
             "role":  user.get("role"),
+            "credits": user.get("credits", 0),
         },
     }
 

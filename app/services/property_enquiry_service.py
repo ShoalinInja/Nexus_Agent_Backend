@@ -26,7 +26,24 @@ async def handle_property_enquiry(req: PropertyEnquiryRequest) -> PropertyEnquir
     session = None
     messages = []
     session_params = {}
+    
+    # ── STEP 1.5: Check user credits ─────────────────────────────
+    user_res = (
+        supabase.table("users")
+        .select("credits")
+        .eq("id", req.userId)
+        .single()
+        .execute()
+    )
 
+    credits = user_res.data.get("credits", 0)
+
+    if credits <= 0:
+        raise HTTPException(
+            status_code=402,
+            detail="Insufficient credits"
+        )
+        
     result = supabase.table("property_enquiry_sessions") \
         .select("*") \
         .eq("chat_id", req.chatId) \
@@ -413,6 +430,22 @@ When params change, data_required should be true.
 
     # logger.info(f"[SESSION] Saved. Total messages: {len(updated_messages)}")
     # logger.info("=" * 60)
+    
+    # ── FINAL STEP: Deduct credits ─────────────────────────────
+    try:
+        supabase.rpc(
+            "decrement_user_credits",
+            {
+                "user_id": req.userId,
+                "amount": 1
+            }
+        ).execute()
+
+        logger.info(f"[CREDITS] Deducted 1 credit for user {req.userId}")
+
+    except Exception as e:
+        logger.error(f"[CREDITS] Deduction failed: {e}")
+        # DO NOT fail response if deduction fails
 
     return PropertyEnquiryResponse(
         chat_id=req.chatId,
