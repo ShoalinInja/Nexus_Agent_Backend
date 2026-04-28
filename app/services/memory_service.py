@@ -45,10 +45,10 @@ def create_conversation(
     if conversation_id:
         payload["conversation_id"] = conversation_id
 
-    logger.info(f"[MEMORY] create_conversation user_id={user_id} explicit_id={bool(conversation_id)}")
+    # logger.info(f"[MEMORY] create_conversation user_id={user_id} explicit_id={bool(conversation_id)}")
     result = supabase.table(TABLE).insert(payload).execute()
     created_id = result.data[0]["conversation_id"]
-    logger.info(f"[MEMORY] created conversation_id={created_id}")
+    # logger.info(f"[MEMORY] created conversation_id={created_id}")
     return created_id
 
 
@@ -57,7 +57,7 @@ def get_conversation(conversation_id: str) -> Optional[dict]:
     Fetch a conversation row by ID. Returns None if not found or soft-deleted.
     """
     supabase = get_supabase()
-    logger.info(f"[MEMORY] get_conversation conversation_id={conversation_id}")
+    # logger.info(f"[MEMORY] get_conversation conversation_id={conversation_id}")
     result = (
         supabase.table(TABLE)
         .select("*")
@@ -66,7 +66,7 @@ def get_conversation(conversation_id: str) -> Optional[dict]:
         .execute()
     )
     if not result.data:
-        logger.warning(f"[MEMORY] conversation not found: {conversation_id}")
+        # logger.warning(f"[MEMORY] conversation not found: {conversation_id}")
         return None
     return result.data[0]
 
@@ -86,10 +86,10 @@ def save_messages(conversation_id: str, messages: list[dict]) -> None:
     Overwrite the messages array and bump updated_at.
     """
     supabase = get_supabase()
-    logger.info(
-        f"[MEMORY] save_messages conversation_id={conversation_id} "
-        f"total_messages={len(messages)}"
-    )
+    # logger.info(
+    #     f"[MEMORY] save_messages conversation_id={conversation_id} "
+    #     f"total_messages={len(messages)}"
+    # )
     supabase.table(TABLE).update(
         {"messages": messages, "updated_at": _now()}
     ).eq("conversation_id", conversation_id).execute()
@@ -100,7 +100,7 @@ def update_filters(conversation_id: str, filters: dict) -> None:
     Persist search filters (city, budget, room_type, etc.) to the conversation row.
     """
     supabase = get_supabase()
-    logger.info(f"[MEMORY] update_filters conversation_id={conversation_id} filters={filters}")
+    # logger.info(f"[MEMORY] update_filters conversation_id={conversation_id} filters={filters}")
     supabase.table(TABLE).update(
         {"filters": filters, "updated_at": _now()}
     ).eq("conversation_id", conversation_id).execute()
@@ -112,7 +112,7 @@ def list_conversations(user_id: str) -> list[dict]:
     Each item includes a 'preview' derived from the first message.
     """
     supabase = get_supabase()
-    logger.info(f"[MEMORY] list_conversations user_id={user_id}")
+    # logger.info(f"[MEMORY] list_conversations user_id={user_id}")
     result = (
         supabase.table(TABLE)
         .select("conversation_id, messages, filters, created_at, updated_at")
@@ -146,7 +146,7 @@ def soft_delete(conversation_id: str) -> None:
     Mark a conversation as deleted (keeps the row in DB).
     """
     supabase = get_supabase()
-    logger.info(f"[MEMORY] soft_delete conversation_id={conversation_id}")
+    # logger.info(f"[MEMORY] soft_delete conversation_id={conversation_id}")
     supabase.table(TABLE).update(
         {"is_deleted": True, "updated_at": _now()}
     ).eq("conversation_id", conversation_id).execute()
@@ -157,7 +157,7 @@ def hard_delete(conversation_id: str) -> None:
     Permanently delete a conversation row from the DB.
     """
     supabase = get_supabase()
-    logger.info(f"[MEMORY] hard_delete conversation_id={conversation_id}")
+    # logger.info(f"[MEMORY] hard_delete conversation_id={conversation_id}")
     supabase.table(TABLE).delete().eq("conversation_id", conversation_id).execute()
 
 
@@ -172,14 +172,14 @@ def delete_conversation(conversation_id: str) -> str:
     messages = get_messages(conversation_id)
     if not messages:
         hard_delete(conversation_id)
-        logger.info(f"[MEMORY] delete_conversation → hard delete (no messages)")
+        # logger.info(f"[MEMORY] delete_conversation → hard delete (no messages)")
         return "hard"
     else:
         soft_delete(conversation_id)
-        logger.info(
-            f"[MEMORY] delete_conversation → soft delete "
-            f"({len(messages)} messages preserved)"
-        )
+        # logger.info(
+        #     f"[MEMORY] delete_conversation → soft delete "
+        #     f"({len(messages)} messages preserved)"
+        # )
         return "soft"
 
 
@@ -196,7 +196,7 @@ def update_context_flags(conversation_id: str, flags: dict) -> None:
         "context_flags": flags,
         "updated_at": _now(),
     }).eq("conversation_id", conversation_id).execute()
-    logger.info(f"[MEMORY] context_flags updated for {conversation_id}: {flags}")
+    # logger.info(f"[MEMORY] context_flags updated for {conversation_id}: {flags}")
 
 
 def update_supply_stale(conversation_id: str, stale: bool) -> None:
@@ -208,7 +208,7 @@ def update_supply_stale(conversation_id: str, stale: bool) -> None:
     supabase.table(TABLE).update(
         {"supply_data_stale": stale, "updated_at": _now()}
     ).eq("conversation_id", conversation_id).execute()
-    logger.info(f"[MEMORY] supply_data_stale={stale} for {conversation_id}")
+    # logger.info(f"[MEMORY] supply_data_stale={stale} for {conversation_id}")
 
 
 def update_last_supply_fetched(conversation_id: str) -> str:
@@ -225,7 +225,7 @@ def update_last_supply_fetched(conversation_id: str) -> str:
             "updated_at": now,
         }
     ).eq("conversation_id", conversation_id).execute()
-    logger.info(f"[MEMORY] last_supply_fetched_at stamped for {conversation_id}")
+    # logger.info(f"[MEMORY] last_supply_fetched_at stamped for {conversation_id}")
     return now
 
 
@@ -239,4 +239,4 @@ def update_last_intent(conversation_id: str, intent: dict) -> None:
         "last_intent": intent,
         "updated_at": _now(),
     }).eq("conversation_id", conversation_id).execute()
-    logger.info(f"[MEMORY] last_intent updated for {conversation_id}")
+    # logger.info(f"[MEMORY] last_intent updated for {conversation_id}")

@@ -30,12 +30,12 @@ def load_kb() -> str:
     """
     global _kb_cache
     if _kb_cache is not None:
-        logger.info("[KB] Returning cached knowledge base")
+        # logger.info("[KB] Returning cached knowledge base")
         return _kb_cache
 
-    logger.info("[KB] Loading knowledge base from Supabase storage...")
+    # logger.info("[KB] Loading knowledge base from Supabase storage...")
     _kb_cache = _fetch_kb()
-    logger.info(f"[KB] Loaded {len(_kb_cache)} chars")
+    # logger.info(f"[KB] Loaded {len(_kb_cache)} chars")
     return _kb_cache
 
 
@@ -51,12 +51,12 @@ def _fetch_kb() -> str:
             newline = text.find("\n", start)
             end = text.rfind("```")
             text = text[newline + 1 : end].strip()
-        logger.info(
-            f"[KB] Loaded knowledge base: {len(text)} chars from Supabase storage"
-        )
+            # logger.info(
+            #     f"[KB] Loaded knowledge base: {len(text)} chars from Supabase storage"
+            # )
         return text
     except Exception as e:
-        logger.error(f"[KB] Failed to fetch knowledge base: {e}")
+        # logger.error(f"[KB] Failed to fetch knowledge base: {e}")
         return ""
 
 

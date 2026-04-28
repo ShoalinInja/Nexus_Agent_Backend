@@ -98,7 +98,7 @@ async def get_current_user(
             .execute()
         )
     except Exception as exc:
-        logger.error(f"[AUTH] DB error while fetching user {user_id}: {exc}")
+        # logger.error(f"[AUTH] DB error while fetching user {user_id}: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication failed due to a database error",
@@ -135,10 +135,10 @@ def require_role(required_role: str):
         current_user: dict = Depends(get_current_user),
     ) -> dict:
         if current_user.get("role") != required_role:
-            logger.warning(
-                f"[AUTH] Role check failed: user {current_user.get('id')} "
-                f"has role '{current_user.get('role')}', required '{required_role}'"
-            )
+            # logger.warning(
+            #     f"[AUTH] Role check failed: user {current_user.get('id')} "
+            #     f"has role '{current_user.get('role')}', required '{required_role}'"
+            # )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Required role: '{required_role}'",

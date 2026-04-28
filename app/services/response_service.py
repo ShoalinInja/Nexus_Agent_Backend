@@ -43,9 +43,9 @@ def get_system_prompt() -> str:
 
         text = _strip_code_fences(resp.text)
 
-        logger.info(
-            f"[RESPONSE] System prompt fetched fresh: {len(text)} chars"
-        )
+        # logger.info(
+        #     f"[RESPONSE] System prompt fetched fresh: {len(text)} chars"
+        # )
         return text
 
     except Exception as e:
@@ -60,9 +60,9 @@ def get_system_prompt() -> str:
         )
         text = _strip_code_fences(prompt_path.read_text(encoding="utf-8"))
 
-        logger.warning(
-            f"[RESPONSE] Using local SYSTEM_PROMPT_v2.md fallback: {len(text)} chars"
-        )
+        # logger.warning(
+        #     f"[RESPONSE] Using local SYSTEM_PROMPT_v2.md fallback: {len(text)} chars"
+        # )
         return text
 
     except Exception as e2:
@@ -74,14 +74,14 @@ def get_system_prompt() -> str:
         "Help sales agents find the right student accommodation."
     )
 
-    logger.error("[RESPONSE] Using hardcoded fallback system prompt")
+    # logger.error("[RESPONSE] Using hardcoded fallback system prompt")
     return fallback
 
 def invalidate_system_prompt_cache() -> None:
     """Force re-fetch of system prompt on next request."""
     global _system_prompt_cache
     _system_prompt_cache = None
-    logger.info("[RESPONSE] System prompt cache invalidated")
+    # logger.info("[RESPONSE] System prompt cache invalidated")
 
 
 # ── Dynamic context formatting (goes into messages[], NOT system) ─────────────
@@ -205,13 +205,13 @@ async def generate_response(
         {"role": "user", "content": final_user_content}
     ]
 
-    logger.info(
-        f"[RESPONSE] system={len(system_text)}chars | "
-        f"history={len(clean_history)}msgs | "
-        f"context_injected={'yes' if turn_context else 'no'} | "
-        f"property={'yes' if property_data else 'no'} | "
-        f"kb={'yes' if kb_text else 'no'}"
-    )
+    # logger.info(
+    #     f"[RESPONSE] system={len(system_text)}chars | "
+    #     f"history={len(clean_history)}msgs | "
+    #     f"context_injected={'yes' if turn_context else 'no'} | "
+    #     f"property={'yes' if property_data else 'no'} | "
+    #     f"kb={'yes' if kb_text else 'no'}"
+    # )
 
     # ── 5. API call ───────────────────────────────────────────────────────────
     openai_messages = [
@@ -227,11 +227,11 @@ async def generate_response(
 
     # ── 6. Log usage ──────────────────────────────────────────────────────────
     usage = response.usage
-    logger.info(
-        f"[RESPONSE] tokens → prompt={usage.prompt_tokens} "
-        f"completion={usage.completion_tokens} total={usage.total_tokens}"
-    )
+    # logger.info(
+    #     f"[RESPONSE] tokens → prompt={usage.prompt_tokens} "
+    #     f"completion={usage.completion_tokens} total={usage.total_tokens}"
+    # )
 
     reply = response.choices[0].message.content
-    logger.info(f"[RESPONSE] reply={len(reply)}chars")
+    # logger.info(f"[RESPONSE] reply={len(reply)}chars")
     return reply

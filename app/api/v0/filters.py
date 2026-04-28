@@ -26,7 +26,7 @@ async def get_filters(
     Also surfaces supply-staleness metadata so the frontend knows whether
     the last chat response used up-to-date supply data.
     """
-    logger.info(f"[FILTERS] GET conversation_id={conversation_id}")
+    # logger.info(f"[FILTERS] GET conversation_id={conversation_id}")
 
     convo = memory_service.get_conversation(conversation_id)
     if not convo:
@@ -81,18 +81,18 @@ async def patch_filters(
 
     if changed_fields:
         merged_filters = {**current_filters, **incoming}
-        logger.info(
-            f"[FILTERS] PATCH changed_fields={changed_fields} "
-            f"conversation_id={conversation_id}"
-        )
+        # logger.info(
+        #     f"[FILTERS] PATCH changed_fields={changed_fields} "
+        #     f"conversation_id={conversation_id}"
+        # )
         # Persist merged filters and mark supply as stale
         memory_service.update_filters(conversation_id, merged_filters)
         memory_service.update_supply_stale(conversation_id, stale=True)
     else:
         merged_filters = current_filters
-        logger.info(
-            f"[FILTERS] PATCH no changes detected conversation_id={conversation_id}"
-        )
+        # logger.info(
+        #     f"[FILTERS] PATCH no changes detected conversation_id={conversation_id}"
+        # )
 
     # Re-fetch so the response reflects the latest DB state
     updated_convo = memory_service.get_conversation(conversation_id)

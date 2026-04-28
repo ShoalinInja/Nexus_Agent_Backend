@@ -223,7 +223,7 @@ def _extract_params(user_message: str) -> dict:
         extracted = json.loads(raw)
         return {k: v for k, v in extracted.items() if v is not None}
     except Exception as e:
-        logger.error(f"[EXTRACTION] gpt-4o-mini extractor failed: {e}. Returning {{}}.")
+        # logger.error(f"[EXTRACTION] gpt-4o-mini extractor failed: {e}. Returning {{}}.")
         return {}
 
 
@@ -259,7 +259,7 @@ def decide(
 
     # Rule 1: first message always fetches supply data
     if is_first_message:
-        logger.info("[DECISION] first_message → needs_retrieval=True")
+        # logger.info("[DECISION] first_message → needs_retrieval=True")
         return AgentPlan(
             needs_retrieval=True,
             needs_kb=False,
@@ -268,7 +268,7 @@ def decide(
 
     # Rule 1.5: explicit filter change from request params
     if filters_changed:
-        logger.info("[DECISION] filters_changed=True → needs_retrieval=True")
+        # logger.info("[DECISION] filters_changed=True → needs_retrieval=True")
         return AgentPlan(
             needs_retrieval=True,
             needs_kb=False,
@@ -278,7 +278,7 @@ def decide(
     # Rule 2: explicit retrieval trigger keywords
     for trigger in _RETRIEVAL_TRIGGERS:
         if trigger in msg_lower:
-            logger.info(f"[DECISION] trigger='{trigger}' → needs_retrieval=True")
+            # logger.info(f"[DECISION] trigger='{trigger}' → needs_retrieval=True")
             extracted = _extract_params(user_message)
             return AgentPlan(
                 needs_retrieval=True,
@@ -290,7 +290,7 @@ def decide(
     # Rule 3: explicit no-retrieval signals
     for signal in _NO_RETRIEVAL_SIGNALS:
         if signal in msg_lower:
-            logger.info(f"[DECISION] signal='{signal}' → needs_retrieval=False")
+            # logger.info(f"[DECISION] signal='{signal}' → needs_retrieval=False")
             return AgentPlan(
                 needs_retrieval=False,
                 needs_kb=False,
@@ -300,7 +300,7 @@ def decide(
     # Rule 4: KB signals — sales techniques, process, policy questions
     for kb_signal in _KB_SIGNALS:
         if kb_signal in msg_lower:
-            logger.info(f"[DECISION] kb_signal='{kb_signal}' → needs_kb=True")
+            # logger.info(f"[DECISION] kb_signal='{kb_signal}' → needs_kb=True")
             return AgentPlan(
                 needs_retrieval=False,
                 needs_kb=True,
@@ -308,7 +308,7 @@ def decide(
             )
 
     # Fallback: delegate ambiguous messages to Haiku classifier
-    logger.info("[DECISION] ambiguous message — delegating to Haiku classifier")
+    # logger.info("[DECISION] ambiguous message — delegating to Haiku classifier")
     return _haiku_classify(user_message, messages)
 
 
@@ -405,10 +405,10 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
             k: v for k, v in result.items()
             if k in _EXTRACTION_PARAM_KEYS and v is not None
         }
-        logger.info(
-            f"[DECISION] gpt-4o-mini classifier → data_required={data_required} "
-            f"kb_required={kb_required} extracted={extracted_params} reason='{reason}'"
-        )
+        # logger.info(
+        #     f"[DECISION] gpt-4o-mini classifier → data_required={data_required} "
+        #     f"kb_required={kb_required} extracted={extracted_params} reason='{reason}'"
+        # )
         return AgentPlan(
             needs_retrieval=data_required,
             needs_kb=kb_required,
@@ -416,7 +416,7 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
             extracted_params=extracted_params,
         )
     except Exception as e:
-        logger.error(f"[DECISION] gpt-4o-mini classifier failed: {e}. Defaulting needs_retrieval=False")
+        # logger.error(f"[DECISION] gpt-4o-mini classifier failed: {e}. Defaulting needs_retrieval=False")
         return AgentPlan(
             needs_retrieval=False,
             needs_kb=False,

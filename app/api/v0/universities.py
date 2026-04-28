@@ -29,11 +29,11 @@ async def get_universities():
         )
         rows = result.data or []
         print(f"[UNIVERSITIES] Fetched {len(rows)} entries from Uni_table")
-        logger.info(f"[UNIVERSITIES] Returned {len(rows)} rows")
+        # logger.info(f"[UNIVERSITIES] Returned {len(rows)} rows")
         return {"universities": rows, "count": len(rows)}
 
     except Exception as e:
-        logger.error(f"[UNIVERSITIES] Supabase query failed: {e}")
+        # logger.error(f"[UNIVERSITIES] Supabase query failed: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch universities: {str(e)}",

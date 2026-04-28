@@ -137,7 +137,7 @@ def extract_json_from_response(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    logger.warning("extract_json_from_response: all strategies failed; using raw text.")
+    # logger.warning("extract_json_from_response: all strategies failed; using raw text.")
     return {"reply": text, "next_model": "general"}
 
 
@@ -197,10 +197,10 @@ async def handle_chat(
         reply = tool_input.get("reply", "")
         next_model = tool_input.get("next_model", "general")
     else:
-        logger.warning(
-            "No tool_calls in response (finish_reason=%s); falling back.",
-            response.choices[0].finish_reason,
-        )
+        # logger.warning(
+        #     "No tool_calls in response (finish_reason=%s); falling back.",
+        #     response.choices[0].finish_reason,
+        # )
         raw_text = message.content or ""
         parsed = extract_json_from_response(raw_text)
         reply = parsed.get("reply", raw_text)

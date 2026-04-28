@@ -221,7 +221,7 @@ async def handle_intent(request: IntentRequest) -> IntentResponse:
     if oai_message.tool_calls:
         tool_input: dict = json.loads(oai_message.tool_calls[0].function.arguments)
     else:
-        logger.error("extract_intent tool_calls missing from response.")
+        # logger.error("extract_intent tool_calls missing from response.")
         tool_input = {
             "reply": "",
             "missing_fields": ["city", "budget"],

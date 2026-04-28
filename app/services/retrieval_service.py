@@ -57,7 +57,7 @@ def _parse_date(raw: str) -> Optional[str]:
             return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
-    logger.warning(f"[RETRIEVAL] Could not parse date: '{raw}'")
+    # logger.warning(f"[RETRIEVAL] Could not parse date: '{raw}'")
     return None
 
 
@@ -89,10 +89,10 @@ def _normalize_room_type(rt: str) -> str:
 
 def _call_rpc(supabase, payload: dict) -> list[dict]:
     """Execute the RPC and return the data list (may be empty)."""
-    logger.info(f"[RETRIEVAL DEBUG] → {_RPC_FUNCTION}({payload})")
+    # logger.info(f"[RETRIEVAL DEBUG] → {_RPC_FUNCTION}({payload})")
     resp = supabase.rpc(_RPC_FUNCTION, payload).execute()
     rows = resp.data or []
-    logger.info(f"[RETRIEVAL DEBUG] ← {len(rows)} rows")
+    # logger.info(f"[RETRIEVAL DEBUG] ← {len(rows)} rows")
     return rows
 
 
@@ -142,13 +142,13 @@ def fetch_properties(filters: dict) -> tuple[str, bool]:
     room_type  = _normalize_room_type(filters.get("room_type") or "")
     move_in    = _parse_date(filters.get("intake") or "")
 
-    logger.info(
-        f"[RETRIEVAL] Normalized inputs — city='{city}' university='{university}' "
-        f"budget={budget} lease={lease} room_type='{room_type}' move_in={move_in}"
-    )
+    # logger.info(
+    #     f"[RETRIEVAL] Normalized inputs — city='{city}' university='{university}' "
+    #     f"budget={budget} lease={lease} room_type='{room_type}' move_in={move_in}"
+    # )
 
     if not city:
-        logger.error("[RETRIEVAL] city is required but empty — aborting")
+        # logger.error("[RETRIEVAL] city is required but empty — aborting")
         return "No city provided. Cannot fetch properties.", False
 
     # ── Base payload (always included) ───────────────────────────────────────
@@ -171,24 +171,24 @@ def fetch_properties(filters: dict) -> tuple[str, bool]:
 
         # ── Pass 2: drop room_type ────────────────────────────────────────────
         if not props and room_type:
-            logger.info("[RETRIEVAL] Pass 2 — relaxing room_type filter")
+            # logger.info("[RETRIEVAL] Pass 2 — relaxing room_type filter")
             payload = {**base, "p_movein": move_in, "p_lease": lease, "p_room_type": None}
             props = _call_rpc(supabase, payload)
 
         # ── Pass 3: drop move_in ──────────────────────────────────────────────
         if not props and move_in:
-            logger.info("[RETRIEVAL] Pass 3 — relaxing move_in filter")
+            # logger.info("[RETRIEVAL] Pass 3 — relaxing move_in filter")
             payload = {**base, "p_movein": None, "p_lease": lease, "p_room_type": None}
             props = _call_rpc(supabase, payload)
 
         # ── Pass 4: drop lease ────────────────────────────────────────────────
         if not props:
-            logger.info("[RETRIEVAL] Pass 4 — relaxing lease filter")
+            # logger.info("[RETRIEVAL] Pass 4 — relaxing lease filter")
             payload = {**base, "p_movein": None, "p_lease": None, "p_room_type": None}
             props = _call_rpc(supabase, payload)
 
         if not props:
-            logger.warning("[RETRIEVAL] All passes returned 0 results")
+            # logger.warning("[RETRIEVAL] All passes returned 0 results")
             return (
                 "No properties found matching the criteria even after broadening the search. "
                 "Inform the agent to try a different city or adjust the budget.",
@@ -196,9 +196,9 @@ def fetch_properties(filters: dict) -> tuple[str, bool]:
             )
 
         text = props
-        logger.info(f"[RETRIEVAL] Returning {len(props)} properties ({len(text)} chars)")
+        # logger.info(f"[RETRIEVAL] Returning {len(props)} properties ({len(text)} chars)")
         return text, True
 
     except Exception as e:
-        logger.error(f"[RETRIEVAL] RPC call failed: {e}", exc_info=True)
+        # logger.error(f"[RETRIEVAL] RPC call failed: {e}", exc_info=True)
         return "", False

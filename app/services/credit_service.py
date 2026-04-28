@@ -32,11 +32,11 @@ def get_user_credits(user_id: str) -> Optional[int]:
         .execute()
     )
     if not result.data:
-        logger.warning(f"[CREDITS] user not found: user_id={user_id}")
+        # logger.warning(f"[CREDITS] user not found: user_id={user_id}")
         return None
 
     credits = result.data.get("credits")
-    logger.info(f"[CREDITS] user_id={user_id} credits={credits}")
+    # logger.info(f"[CREDITS] user_id={user_id} credits={credits}")
     return credits
 
 
@@ -68,8 +68,8 @@ def deduct_user_credits(user_id: str, amount: int = 1) -> Optional[int]:
         elif isinstance(result.data, dict):
             new_balance = result.data.get("credits") or result.data.get("new_balance")
 
-    logger.info(
-        f"[CREDITS] deducted {amount} credit(s) "
-        f"user_id={user_id} new_balance={new_balance}"
-    )
+    # logger.info(
+    #     f"[CREDITS] deducted {amount} credit(s) "
+    #     f"user_id={user_id} new_balance={new_balance}"
+    # )
     return new_balance

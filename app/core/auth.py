@@ -33,5 +33,5 @@ def decode_token(token: str) -> dict:
     except ExpiredSignatureError:
         raise ValueError("Token has expired")
     except JWTError as exc:
-        logger.debug(f"[AUTH] JWT decode error: {exc}")
+        # logger.debug(f"[AUTH] JWT decode error: {exc}")
         raise ValueError("Invalid token")

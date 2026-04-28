@@ -49,10 +49,10 @@ async def register_user(name: str, email: str, password: str) -> dict:
 
     # ── STEP B: Extract role from Team field ──────────────────────────────────
     role = agent_record.get("Team") or "gpc"
-    logger.info(
-        f"[AUTH] Agent_Access found for {email} — "
-        f"Team='{role}' is_active={agent_record.get('is_active')}"
-    )
+    # logger.info(
+    #     f"[AUTH] Agent_Access found for {email} — "
+    #     f"Team='{role}' is_active={agent_record.get('is_active')}"
+    # )
 
     # ── Check for existing account ────────────────────────────────────────────
     existing = await asyncio.to_thread(
@@ -134,10 +134,10 @@ async def login_user(email: str, password: str) -> dict:
             ),
         )
 
-    logger.info(
-        f"[AUTH] Agent_Access verified for {email} — "
-        f"is_active=True Team='{agent_record.get('Team')}'"
-    )
+    # logger.info(
+    #     f"[AUTH] Agent_Access verified for {email} — "
+    #     f"is_active=True Team='{agent_record.get('Team')}'"
+    # )
 
     token = create_token(str(user["id"]))
 
