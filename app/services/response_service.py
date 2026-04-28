@@ -2,6 +2,7 @@
 Response Agent — generates the final LLM reply using OpenAI.
 """
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -11,12 +12,17 @@ from app.core.llm import get_openai_async_client
 
 logger = logging.getLogger(__name__)
 
-# ── System prompt: fetched once, NEVER modified ──────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT_URL = (
     "https://mkwuyzmhsnmrkhsuvejp.supabase.co/storage/v1/object/public/"
     "system-configs/SYSTEM_PROMPT_v2.md"
 )
+
+_CACHE_TTL = 300  # seconds (5 minutes)
+
+# ── Cache state ───────────────────────────────────────────────────────────────
 _system_prompt_cache: Optional[str] = None
+_last_fetch_time: float = 0.0
 
 
 def _strip_code_fences(raw: str) -> str:
@@ -32,53 +38,73 @@ def _strip_code_fences(raw: str) -> str:
 def get_system_prompt() -> str:
     """
     Return the system prompt string.
-    Fetched from Supabase storage on first call, then served from memory.
-    The returned string is NEVER modified — it is used as-is in every request.
 
-    Falls back to local file, then hardcoded string if Supabase is unreachable.
+    Behavior:
+    - Uses in-memory cache with TTL
+    - Refreshes after TTL expires
+    - Falls back to local file if fetch fails
+    - Falls back to hardcoded prompt as last resort
     """
-    global _system_prompt_cache
-    if _system_prompt_cache is not None:
+    global _system_prompt_cache, _last_fetch_time
+
+    now = time.time()
+
+    # ── 1. Return cached if still valid ───────────────────────────────────────
+    if _system_prompt_cache and (now - _last_fetch_time < _CACHE_TTL):
         return _system_prompt_cache
 
-    # 1. Supabase storage (primary)
+    # ── 2. Fetch from Supabase ────────────────────────────────────────────────
     try:
-        resp = httpx.get(_SYSTEM_PROMPT_URL, timeout=10)
+        # Optional cache-busting to avoid CDN stale responses
+        url = f"{_SYSTEM_PROMPT_URL}?ts={int(now)}"
+
+        resp = httpx.get(url, timeout=10)
         resp.raise_for_status()
+
         text = _strip_code_fences(resp.text)
+
         _system_prompt_cache = text
+        _last_fetch_time = now
+
         logger.info(
-            f"[RESPONSE] System prompt loaded from Supabase: {len(text)} chars"
+            f"[RESPONSE] System prompt refreshed from Supabase: {len(text)} chars"
         )
         return text
+
     except Exception as e:
         logger.error(
             f"[RESPONSE] Failed to fetch system prompt from Supabase: {e}"
         )
 
-    # 2. Local file fallback
+    # ── 3. Fallback: local file ───────────────────────────────────────────────
     try:
         prompt_path = (
             Path(__file__).parent.parent / "prompt" / "SYSTEM_PROMPT_v2.md"
         )
         text = _strip_code_fences(prompt_path.read_text(encoding="utf-8"))
+
         _system_prompt_cache = text
+        _last_fetch_time = now
+
         logger.warning(
             f"[RESPONSE] Using local SYSTEM_PROMPT_v2.md fallback: {len(text)} chars"
         )
         return text
+
     except Exception as e2:
         logger.error(f"[RESPONSE] Local fallback failed: {e2}")
 
-    # 3. Hardcoded last-resort
+    # ── 4. Final fallback ─────────────────────────────────────────────────────
     fallback = (
         "You are a property recommendation specialist. "
         "Help sales agents find the right student accommodation."
     )
+
     _system_prompt_cache = fallback
+    _last_fetch_time = now
+
     logger.error("[RESPONSE] Using hardcoded fallback system prompt")
     return fallback
-
 
 def invalidate_system_prompt_cache() -> None:
     """Force re-fetch of system prompt on next request."""
