@@ -210,7 +210,7 @@ async def generate_response(
 
     client = get_openai_async_client()
     response = await client.chat.completions.create(
-        model="gpt-5-mini",
+        model="gpt-4.1",
         # max_tokens=12096,
         messages=openai_messages,
     )
@@ -278,7 +278,7 @@ async def stream_response(
     client = get_openai_async_client()
     try:
         stream = await client.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-4.1",
             messages=openai_messages,
             stream=True,
         )
