@@ -2,7 +2,13 @@
 
 """
 Response Agent — generates the final LLM reply using OpenAI.
+
+Provides two entry points:
+  generate_response() — blocking call, returns the full reply string.
+  stream_response()   — async generator, yields SSE-formatted token events.
+                        Caller is responsible for yielding the [DONE] sentinel.
 """
+import json
 import logging
 from pathlib import Path
 
@@ -76,13 +82,6 @@ def get_system_prompt() -> str:
 
     # logger.error("[RESPONSE] Using hardcoded fallback system prompt")
     return fallback
-
-def invalidate_system_prompt_cache() -> None:
-    """Force re-fetch of system prompt on next request."""
-    global _system_prompt_cache
-    _system_prompt_cache = None
-    # logger.info("[RESPONSE] System prompt cache invalidated")
-
 
 # ── Dynamic context formatting (goes into messages[], NOT system) ─────────────
 
@@ -167,15 +166,6 @@ async def generate_response(
     # ── 1. System prompt — pure, unmodified, always identical ─────────────────
     system_text = get_system_prompt()
 
-    # Typed content block with cache_control — this is what Anthropic caches
-    system_block = [
-        {
-            "type": "text",
-            "text": system_text,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
-
     # ── 2. Dynamic context — injected into messages[], NOT system ─────────────
     turn_context = _build_turn_context(
         filters=filters or {},
@@ -220,7 +210,7 @@ async def generate_response(
 
     client = get_openai_async_client()
     response = await client.chat.completions.create(
-        model="gpt-5",
+        model="gpt-5-mini",
         # max_tokens=12096,
         messages=openai_messages,
     )
@@ -235,3 +225,67 @@ async def generate_response(
     reply = response.choices[0].message.content
     # logger.info(f"[RESPONSE] reply={len(reply)}chars")
     return reply
+
+
+# ── Streaming generation function ─────────────────────────────────────────────
+
+async def stream_response(
+    user_prompt: str,
+    messages: list[dict],
+    property_data: str = "",
+    kb_text: str = "",
+    filters: dict = None,
+):
+    """
+    Async generator — yields SSE-formatted token events for streaming.
+
+    Yields:
+        ``data: {"token": "<text>"}\n\n``  for each delta token
+        ``data: {"error": "<msg>"}\n\n``   on OpenAI failure
+
+    Does NOT yield the [DONE] sentinel — the caller (event_generator in
+    chat.py) is responsible for that so it can insert a metadata event first.
+
+    Args: same as generate_response().
+    """
+    # ── Build messages (identical pipeline to generate_response) ─────────────
+    system_text = get_system_prompt()
+
+    turn_context = _build_turn_context(
+        filters=filters or {},
+        property_data=property_data,
+        kb_text=kb_text,
+    )
+
+    final_user_content = (
+        f"{turn_context}\n\n{user_prompt}" if turn_context else user_prompt
+    )
+
+    trimmed = messages[-10:] if len(messages) > 10 else messages
+    clean_history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in trimmed
+        if m.get("role") in ("user", "assistant") and m.get("content")
+    ]
+
+    openai_messages = (
+        [{"role": "system", "content": system_text}]
+        + clean_history
+        + [{"role": "user", "content": final_user_content}]
+    )
+
+    # ── Stream from OpenAI ────────────────────────────────────────────────────
+    client = get_openai_async_client()
+    try:
+        stream = await client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=openai_messages,
+            stream=True,
+        )
+        async for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield f"data: {json.dumps({'token': delta})}\n\n"
+    except Exception as e:
+        logger.error(f"[STREAM] OpenAI stream error: {e}")
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"

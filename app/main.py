@@ -5,7 +5,6 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.core.database import get_supabase
-from app.api.routes import router
 from app.api.v0.router import v0_router
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,7 +35,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# app.include_router(router)
 app.include_router(v0_router, prefix="/v0/api")
 
 

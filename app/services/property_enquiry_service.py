@@ -329,15 +329,15 @@ When params change, data_required should be true.
     # logger.info("[AGENT] Building property agent prompt...")
 
     system_parts = [
-        "You are a specialist property recommendation agent for UniAcco, "
-        "a student accommodation platform. You assist sales agents in "
-        "finding the right property for students.",
-        "Conversation guidelines:",
-        "- Respond naturally as if you remember the entire conversation",
-        "- Reference properties by name when relevant",
-        "- Be specific about prices, room types, and move-in dates",
-        "- Never mention data fetching, databases, or technical processes",
-        "- Sound like an expert who genuinely knows these properties",
+        # "You are a specialist property recommendation agent for UniAcco, "
+        # "a student accommodation platform. You assist sales agents in "
+        # "finding the right property for students.",
+        # "Conversation guidelines:",
+        # "- Respond naturally as if you remember the entire conversation",
+        # "- Reference properties by name when relevant",
+        # "- Be specific about prices, room types, and move-in dates",
+        # "- Never mention data fetching, databases, or technical processes",
+        # "- Sound like an expert who genuinely knows these properties",
     ]
 
     if effective_params.get("city"):
@@ -383,7 +383,7 @@ When params change, data_required should be true.
     ] + [{"role": "user", "content": req.prompt}]
 
     agent_response = await openai_client.chat.completions.create(
-        model="gpt-5",
+        model="gpt-4-mini",
         # max_tokens=4024,
         messages=agent_openai_messages,
     )

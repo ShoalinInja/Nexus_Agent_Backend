@@ -207,7 +207,7 @@ async def handle_intent(request: IntentRequest) -> IntentResponse:
     )
 
     response = await client.chat.completions.create(
-        model="gpt-5",
+        model="gpt-5-mini",
         # max_tokens=1024,
         messages=messages,
         tools=[EXTRACT_INTENT_TOOL],
