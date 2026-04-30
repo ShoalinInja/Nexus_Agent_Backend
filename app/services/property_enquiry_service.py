@@ -192,7 +192,7 @@ When params change, data_required should be true.
 
         classifier_response = await openai_client.chat.completions.create(
             model="gpt-4o-mini",
-            max_tokens=300,
+            max_tokens=500,
             messages=classifier_openai_messages,
             tools=[classifier_tool],
             tool_choice={"type": "function", "function": {"name": "routing_decision"}},
