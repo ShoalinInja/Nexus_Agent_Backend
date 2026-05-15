@@ -135,7 +135,7 @@ def fetch_properties(filters: dict) -> tuple[str, bool]:
     supabase = get_supabase()
 
     # ── Normalize inputs ──────────────────────────────────────────────────────
-    city       = _normalize_city(filters.get("city") or "")
+    city       = filters.get("city") or ""
     university = _normalize_university(filters.get("university") or "")
     budget     = float(filters.get("budget") or 300)
     lease      = float(filters.get("lease") or 44)

@@ -123,8 +123,12 @@ def _build_turn_context(
     else:
         sections.append(
             "## Available Properties\n"
-            "No supply data fetched for this turn. "
-            "Answer from conversation history."
+            "[FOLLOW-UP TURN — NO NEW PROPERTY SEARCH]\n"
+            "Do NOT re-list, re-present, or re-format any property options. "
+            "The agent has already shown the student the available properties. "
+            "Answer this specific follow-up question directly and concisely. "
+            "You may mention a property name inline only if directly relevant, "
+            "but never reproduce full property cards, WhatsApp templates, or structured lists."
         )
 
     if kb_text:
