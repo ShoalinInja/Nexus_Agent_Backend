@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     JWT_SECRET: str = ""
     JWT_EXPIRE_DAYS: int = 30
     ALGORITHM : str = ""
+    RESEND_API_KEY: str = ""
+    OTP_EXPIRE_MINUTES: int = 10
 
     class Config:
         env_file = ".env"

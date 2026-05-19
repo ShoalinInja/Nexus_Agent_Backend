@@ -217,6 +217,7 @@ async def generate_response(
         model="gpt-4.1",
         # max_tokens=12096,
         messages=openai_messages,
+        temperature=0.5,
     )
 
     # ── 6. Log usage ──────────────────────────────────────────────────────────
@@ -285,6 +286,7 @@ async def stream_response(
             model="gpt-4.1",
             messages=openai_messages,
             stream=True,
+            temperature=0.5,
         )
         async for chunk in stream:
             delta = chunk.choices[0].delta.content
