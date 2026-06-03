@@ -14,6 +14,7 @@ Pipeline (all heavy work runs BEFORE the SSE generator):
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 
 from app.core.dependencies import get_current_user
 from app.core.llm import get_openai_async_client
+from app.core.llm_metrics import LLMMetrics
 from app.services import memory_service
 from app.services.connoisseur_service import (
     _get_connoisseur_system_prompt,
@@ -60,6 +62,10 @@ async def connoisseur_chat(
     Emits: data: {"token": "..."} | data: {"sources": [...]} | data: [DONE] | data: {"error": "..."}
     """
 
+    # ── Per-turn observability ──────────────────────────────────────────────
+    metrics = LLMMetrics()
+    turn_started = time.perf_counter()
+
     # ── Pre-generator work (errors here return HTTP responses, not SSE) ───────
 
     try:
@@ -93,7 +99,7 @@ async def connoisseur_chat(
         )
 
         # Step 2 — Intent parse (sync, gpt-4o-mini)
-        intent = parse_intent(body.prompt, messages)
+        intent = parse_intent(body.prompt, messages, metrics=metrics)
 
         # Step 3 — Embed + retrieve (async)
         texts = [intent["hyde_document"]] + intent["query_variants"][:3]
@@ -184,26 +190,52 @@ async def connoisseur_chat(
     async def event_generator():
         full_reply = ""
         stream_errored = False
+        captured_model: str = ""
+        captured_usage = None
 
         try:
             client = get_openai_async_client()
+            # stream_options.include_usage is REQUIRED for the final chunk to
+            # carry token counts — without it, captured_usage stays None and
+            # input/output tokens are recorded as 0.
             stream = await client.chat.completions.create(
                 model="gpt-4.1",
                 messages=openai_messages,
                 stream=True,
+                stream_options={"include_usage": True},
             )
             logger.info("[CONNOISSEUR] Streaming started")
 
             async for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    full_reply += delta
-                    yield f"data: {json.dumps({'token': delta})}\n\n"
+                if not captured_model and getattr(chunk, "model", None):
+                    captured_model = chunk.model
+                if getattr(chunk, "usage", None):
+                    captured_usage = chunk.usage
+                # The final usage-only chunk has an empty choices list
+                if chunk.choices:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        full_reply += delta
+                        yield f"data: {json.dumps({'token': delta})}\n\n"
 
         except Exception as stream_err:
             stream_errored = True
             logger.error(f"[CONNOISSEUR] Stream error: {stream_err}")
             yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
+        finally:
+            # Always record usage. On disconnect / mid-stream exception the
+            # usage chunk never arrived → tokens stay 0, which is spec-correct.
+            if captured_usage is None:
+                logger.warning(
+                    f"[CONNOISSEUR] No usage chunk received for "
+                    f"conversation_id={body.conversation_id} — "
+                    "stream likely terminated before completion. Tokens=0."
+                )
+            metrics.add(
+                model=captured_model or "gpt-4.1",
+                input_tokens=getattr(captured_usage, "prompt_tokens", 0) if captured_usage else 0,
+                output_tokens=getattr(captured_usage, "completion_tokens", 0) if captured_usage else 0,
+            )
 
         # Emit sources BEFORE [DONE] — frontend exits on [DONE] so anything after is ignored
         if top_chunks and not stream_errored:
@@ -223,6 +255,9 @@ async def connoisseur_chat(
         # Persist messages to conversations table
         if full_reply:
             try:
+                # Wall-clock for the whole turn (load → intent → embed →
+                # retrieve → rerank → stream). Set before building asst msg.
+                metrics.latency_ms = int((time.perf_counter() - turn_started) * 1000)
                 updated = list(raw_messages) + [
                     {
                         "role":      "user",
@@ -233,6 +268,7 @@ async def connoisseur_chat(
                         "role":      "assistant",
                         "content":   full_reply,
                         "timestamp": _now(),
+                        **metrics.to_dict(),
                     },
                 ]
                 memory_service.save_messages(body.conversation_id, updated)

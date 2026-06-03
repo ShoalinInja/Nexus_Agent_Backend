@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.core.dependencies import get_current_user
+from app.core.llm_metrics import LLMMetrics
 from app.schemas.chat_schemas import (
     ChatHistoryResponse,
     ChatMessage,
@@ -50,6 +51,10 @@ async def send_message(
     #     f"conversation_id={conversation_id} user_id={user_id}"
     # )
     # logger.info(f"[CHAT] user_prompt='{body.message[:120]}...'")
+
+    # ── Per-turn observability ──────────────────────────────────────────────
+    metrics = LLMMetrics()
+    turn_started = time.perf_counter()
 
     # ── 1. Load conversation ─────────────────────────────────────────────────
     convo = memory_service.get_conversation(conversation_id)
@@ -189,6 +194,7 @@ async def send_message(
             is_first_message=is_first_message,
             messages=messages,
             filters_changed=filters_changed,
+            metrics=metrics,
         )
         decision_reason = plan.reason
         # logger.info(
@@ -265,13 +271,20 @@ async def send_message(
         property_data=property_data,
         kb_text=kb_text,
         filters=effective_filters,
+        metrics=metrics,
     )
     # logger.info(f"[CHAT] ── STEP 5: RESPONSE DONE ── reply_chars={len(reply)}")
 
     # ── 6. Persist: messages + filters + context_flags ───────────────────────
     now = datetime.now(timezone.utc).isoformat()
+    metrics.latency_ms = int((time.perf_counter() - turn_started) * 1000)
     user_msg = {"role": "user", "content": body.message, "timestamp": now}
-    asst_msg = {"role": "assistant", "content": reply, "timestamp": now}
+    asst_msg = {
+        "role": "assistant",
+        "content": reply,
+        "timestamp": now,
+        **metrics.to_dict(),
+    }
     updated_messages = messages + [user_msg, asst_msg]
 
     memory_service.save_messages(conversation_id, updated_messages)
@@ -395,6 +408,10 @@ async def stream_message(
     """
     user_id = str(current_user["id"])
 
+    # ── Per-turn observability ──────────────────────────────────────────────
+    metrics = LLMMetrics()
+    turn_started = time.perf_counter()
+
     # ── 1. Load conversation ─────────────────────────────────────────────────
     convo = memory_service.get_conversation(body.conversation_id)
     if not convo:
@@ -485,6 +502,7 @@ async def stream_message(
             is_first_message=is_first_message,
             messages=messages,
             filters_changed=filters_changed,
+            metrics=metrics,
         )
         decision_reason = plan.reason
 
@@ -533,6 +551,7 @@ async def stream_message(
             property_data=property_data,
             kb_text=kb_text,
             filters=effective_filters,
+            metrics=metrics,
         ):
             yield sse_line
 
@@ -555,9 +574,17 @@ async def stream_message(
 
         # ── Post-processing (runs after all tokens delivered) ────────────────
         now = datetime.now(timezone.utc).isoformat()
+        # Wall-clock latency for the whole turn (covers decision + retrieval +
+        # stream). Set before building asst_msg so it's spread into the dict.
+        metrics.latency_ms = int((time.perf_counter() - turn_started) * 1000)
         if reply:  # only persist if we got something
             user_msg = {"role": "user", "content": body.message, "timestamp": now}
-            asst_msg = {"role": "assistant", "content": reply, "timestamp": now}
+            asst_msg = {
+                "role": "assistant",
+                "content": reply,
+                "timestamp": now,
+                **metrics.to_dict(),
+            }
             memory_service.save_messages(conversation_id, messages + [user_msg, asst_msg])
 
         if request_filters or extracted_changes:

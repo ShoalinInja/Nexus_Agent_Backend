@@ -11,10 +11,12 @@ Provides two entry points:
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 import httpx
 
 from app.core.llm import get_openai_async_client
+from app.core.llm_metrics import LLMMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +150,7 @@ async def generate_response(
     property_data: str = "",
     kb_text: str = "",
     filters: dict = None,
+    metrics: Optional[LLMMetrics] = None,
 ) -> str:
     """
     Generate the assistant reply using a cached system prompt + dynamic context.
@@ -220,12 +223,14 @@ async def generate_response(
         temperature=0,
     )
 
-    # ── 6. Log usage ──────────────────────────────────────────────────────────
-    usage = response.usage
-    # logger.info(
-    #     f"[RESPONSE] tokens → prompt={usage.prompt_tokens} "
-    #     f"completion={usage.completion_tokens} total={usage.total_tokens}"
-    # )
+    # ── 6. Observability — record model + usage on the per-turn metrics ──────
+    if metrics is not None:
+        usage = getattr(response, "usage", None)
+        metrics.add(
+            model=getattr(response, "model", "") or "gpt-4.1",
+            input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+        )
 
     reply = response.choices[0].message.content
     # logger.info(f"[RESPONSE] reply={len(reply)}chars")
@@ -240,6 +245,7 @@ async def stream_response(
     property_data: str = "",
     kb_text: str = "",
     filters: dict = None,
+    metrics: Optional[LLMMetrics] = None,
 ):
     """
     Async generator — yields SSE-formatted token events for streaming.
@@ -280,18 +286,46 @@ async def stream_response(
     )
 
     # ── Stream from OpenAI ────────────────────────────────────────────────────
+    # stream_options.include_usage is REQUIRED for the stream to emit a final
+    # chunk carrying token counts. Without it, chunk.usage is None throughout
+    # and metrics.input_tokens / output_tokens stay at 0.
     client = get_openai_async_client()
+    captured_model: str = ""
+    captured_usage = None
     try:
         stream = await client.chat.completions.create(
             model="gpt-4.1",
             messages=openai_messages,
             stream=True,
             temperature=0,
+            stream_options={"include_usage": True},
         )
         async for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield f"data: {json.dumps({'token': delta})}\n\n"
+            # Capture model id from the first chunk that carries it
+            if not captured_model and getattr(chunk, "model", None):
+                captured_model = chunk.model
+            # Usage block arrives only on the final chunk
+            if getattr(chunk, "usage", None):
+                captured_usage = chunk.usage
+            # The final usage-only chunk has an empty choices list, so guard it
+            if chunk.choices:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield f"data: {json.dumps({'token': delta})}\n\n"
     except Exception as e:
         logger.error(f"[STREAM] OpenAI stream error: {e}")
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    finally:
+        # Always record what we have. On disconnect / mid-stream exception the
+        # final usage chunk never arrived → tokens stay 0, which is correct.
+        if metrics is not None:
+            if captured_usage is None:
+                logger.warning(
+                    "[STREAM] No usage chunk received — stream likely "
+                    "terminated before completion. Tokens recorded as 0."
+                )
+            metrics.add(
+                model=captured_model or "gpt-4.1",
+                input_tokens=getattr(captured_usage, "prompt_tokens", 0) if captured_usage else 0,
+                output_tokens=getattr(captured_usage, "completion_tokens", 0) if captured_usage else 0,
+            )

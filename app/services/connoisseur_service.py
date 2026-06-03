@@ -24,6 +24,7 @@ import httpx
 from app.core.config import settings
 from app.core.database import get_supabase
 from app.core.llm import get_openai_client, get_openai_async_client
+from app.core.llm_metrics import LLMMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +283,11 @@ _INTENT_TOOL = {
 
 # ── Public functions ─────────────────────────────────────────────────────────
 
-def parse_intent(prompt: str, messages: list) -> dict:
+def parse_intent(
+    prompt: str,
+    messages: list,
+    metrics: Optional[LLMMetrics] = None,
+) -> dict:
     """
     Use gpt-4o-mini to expand the user's query for vector retrieval.
 
@@ -323,6 +328,14 @@ def parse_intent(prompt: str, messages: list) -> dict:
             tools=[_INTENT_TOOL],
             tool_choice={"type": "function", "function": {"name": "parse_query_intent"}},
         )
+
+        if metrics is not None:
+            usage = getattr(resp, "usage", None)
+            metrics.add(
+                model=getattr(resp, "model", "") or "gpt-4o-mini",
+                input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            )
 
         raw = resp.choices[0].message.tool_calls[0].function.arguments
         result = json.loads(raw)

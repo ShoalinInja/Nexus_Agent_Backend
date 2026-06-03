@@ -10,8 +10,10 @@ The Haiku classifier can set BOTH needs_retrieval AND needs_kb.
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import Optional
 
 from app.core.llm import get_openai_client
+from app.core.llm_metrics import LLMMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +203,10 @@ _EXTRACTION_TOOL = {
 _EXTRACTION_PARAM_KEYS = frozenset({"city", "university", "budget", "room_type", "lease", "intake"})
 
 
-def _extract_params(user_message: str) -> dict:
+def _extract_params(
+    user_message: str,
+    metrics: Optional[LLMMetrics] = None,
+) -> dict:
     """
     Run gpt-4o-mini to extract any filter changes mentioned in the message text.
     Returns only the fields that were clearly mentioned; returns {} if nothing changed.
@@ -219,6 +224,13 @@ def _extract_params(user_message: str) -> dict:
             tools=[_EXTRACTION_TOOL],
             tool_choice={"type": "function", "function": {"name": "extract_params"}},
         )
+        if metrics is not None:
+            usage = getattr(resp, "usage", None)
+            metrics.add(
+                model=getattr(resp, "model", "") or "gpt-4o-mini",
+                input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            )
         raw = resp.choices[0].message.tool_calls[0].function.arguments
         extracted = json.loads(raw)
         return {k: v for k, v in extracted.items() if v is not None}
@@ -240,6 +252,7 @@ def decide(
     is_first_message: bool,
     messages: list[dict],
     filters_changed: bool = False,
+    metrics: Optional[LLMMetrics] = None,
 ) -> AgentPlan:
     """
     Apply rule-based routing first.
@@ -279,7 +292,7 @@ def decide(
     for trigger in _RETRIEVAL_TRIGGERS:
         if trigger in msg_lower:
             # logger.info(f"[DECISION] trigger='{trigger}' → needs_retrieval=True")
-            extracted = _extract_params(user_message)
+            extracted = _extract_params(user_message, metrics=metrics)
             return AgentPlan(
                 needs_retrieval=True,
                 needs_kb=False,
@@ -309,10 +322,14 @@ def decide(
 
     # Fallback: delegate ambiguous messages to Haiku classifier
     # logger.info("[DECISION] ambiguous message — delegating to Haiku classifier")
-    return _haiku_classify(user_message, messages)
+    return _haiku_classify(user_message, messages, metrics=metrics)
 
 
-def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
+def _haiku_classify(
+    user_message: str,
+    messages: list[dict],
+    metrics: Optional[LLMMetrics] = None,
+) -> AgentPlan:
     """
     LLM fallback — uses gpt-4o-mini with forced tool use to classify the intent.
     Only called when Python rules are inconclusive.
@@ -397,6 +414,13 @@ def _haiku_classify(user_message: str, messages: list[dict]) -> AgentPlan:
             tools=[tool],
             tool_choice={"type": "function", "function": {"name": "routing_decision"}},
         )
+        if metrics is not None:
+            usage = getattr(resp, "usage", None)
+            metrics.add(
+                model=getattr(resp, "model", "") or "gpt-4o-mini",
+                input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            )
         result = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
         data_required = result.get("data_required", False)
         kb_required   = result.get("kb_required", False)
