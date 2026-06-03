@@ -9,6 +9,7 @@ The Haiku classifier can set BOTH needs_retrieval AND needs_kb.
 """
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -212,10 +213,15 @@ def _extract_params(
     Returns only the fields that were clearly mentioned; returns {} if nothing changed.
     Called when needs_retrieval=True so retrieval uses up-to-date filters.
     """
+    # Single source of truth for the model id used by this function.
+    # Swapping this literal updates BOTH the API request and the persisted
+    # fallback identity — no second hardcoded value to keep in sync.
+    requested_model = "gpt-4o-mini"
     try:
         client = get_openai_client()
+        call_started = time.perf_counter()
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=requested_model,
             max_tokens=200,
             messages=[
                 {"role": "system", "content": _EXTRACTION_SYSTEM},
@@ -224,12 +230,14 @@ def _extract_params(
             tools=[_EXTRACTION_TOOL],
             tool_choice={"type": "function", "function": {"name": "extract_params"}},
         )
+        call_ms = int((time.perf_counter() - call_started) * 1000)
         if metrics is not None:
             usage = getattr(resp, "usage", None)
             metrics.add(
-                model=getattr(resp, "model", "") or "gpt-4o-mini",
+                model=getattr(resp, "model", "") or requested_model,
                 input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
                 output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+                latency_ms=call_ms,
             )
         raw = resp.choices[0].message.tool_calls[0].function.arguments
         extracted = json.loads(raw)
@@ -405,21 +413,25 @@ def _haiku_classify(
         + [{"role": "user", "content": user_message}]
     )
 
+    requested_model = "gpt-4o-mini"
     try:
         client = get_openai_client()
+        call_started = time.perf_counter()
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=requested_model,
             max_tokens=400,
             messages=classifier_messages,
             tools=[tool],
             tool_choice={"type": "function", "function": {"name": "routing_decision"}},
         )
+        call_ms = int((time.perf_counter() - call_started) * 1000)
         if metrics is not None:
             usage = getattr(resp, "usage", None)
             metrics.add(
-                model=getattr(resp, "model", "") or "gpt-4o-mini",
+                model=getattr(resp, "model", "") or requested_model,
                 input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
                 output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+                latency_ms=call_ms,
             )
         result = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
         data_required = result.get("data_required", False)

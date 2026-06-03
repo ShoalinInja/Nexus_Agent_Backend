@@ -63,13 +63,7 @@ async def send_message(
 
     if str(convo.get("user_id")) != user_id:
         raise HTTPException(status_code=403, detail="Not authorised")
-
-    # ── 1b. Credit check — must happen before any heavy processing ───────────
-    credits_before = credit_service.get_user_credits(user_id)
-    if credits_before is None or credits_before <= 0:
-        logger.warning(f"[CREDITS] Insufficient credits for user_id={user_id} credits={credits_before}")
-        raise HTTPException(status_code=402, detail="Insufficient credits")
-    logger.info(f"[CREDITS] Pre-request balance: user_id={user_id} credits={credits_before}")
+    
 
     messages: list[dict] = convo.get("messages") or []
     stored_filters: dict = convo.get("filters") or {}
@@ -77,11 +71,29 @@ async def send_message(
     is_first_message = len(messages) == 0
     msg_count = len(messages)
 
-    # Enquiry type: use request value on first message, else load from DB
+    # Enquiry type: use request value on first message, else load from DB.
+    # Resolved EARLY because the credit cost depends on it.
     enquiry_type = (
         body.enquiry_type
         or convo.get("enquiry_type")
         or "property_recommendation"
+    )
+
+    # ── 1b. Credit check — must happen before any heavy processing ───────────
+    # Property Recommendation = 2 credits (multi-call pipeline: decision → retrieval → generation).
+    # All other agents = 1 credit.
+    credit_cost = 2 if enquiry_type == "property_recommendation" else 1
+    credits_before = credit_service.get_user_credits(user_id)
+    if credits_before is None or credits_before < credit_cost:
+        logger.warning(
+            f"[CREDITS] Insufficient credits for user_id={user_id} "
+            f"credits={credits_before} required={credit_cost} "
+            f"enquiry_type={enquiry_type}"
+        )
+        raise HTTPException(status_code=402, detail="Insufficient credits")
+    logger.info(
+        f"[CREDITS] Pre-request balance: user_id={user_id} "
+        f"credits={credits_before} required={credit_cost}"
     )
 
     # logger.info(
@@ -283,6 +295,7 @@ async def send_message(
         "role": "assistant",
         "content": reply,
         "timestamp": now,
+        "enquiry_type": enquiry_type,
         **metrics.to_dict(),
     }
     updated_messages = messages + [user_msg, asst_msg]
@@ -329,10 +342,10 @@ async def send_message(
     # ── 7. Deduct credit — only reached on a fully successful response ────────
     credits_remaining: int | None = None
     try:
-        credits_remaining = credit_service.deduct_user_credits(user_id, amount=1)
+        credits_remaining = credit_service.deduct_user_credits(user_id, amount=credit_cost)
         # Fallback: compute locally if RPC returned no balance
         if credits_remaining is None:
-            credits_remaining = credits_before - 1
+            credits_remaining = credits_before - credit_cost
         logger.info(
             f"[CREDITS] Deduction successful: user_id={user_id} "
             f"before={credits_before} after={credits_remaining}"
@@ -419,18 +432,30 @@ async def stream_message(
     if str(convo.get("user_id")) != user_id:
         raise HTTPException(status_code=403, detail="Not authorised")
 
-    # ── 1b. Credit check ────────────────────────────────────────────────────
-    credits_before = credit_service.get_user_credits(user_id)
-    if credits_before is None or credits_before <= 0:
-        raise HTTPException(status_code=402, detail="Insufficient credits")
-
     conversation_id = body.conversation_id
     messages: list[dict] = convo.get("messages") or []
     stored_filters: dict = convo.get("filters") or {}
     is_first_message = len(messages) == 0
 
+    # Resolved EARLY because the credit cost depends on it.
     enquiry_type = (
         body.enquiry_type or convo.get("enquiry_type") or "property_recommendation"
+    )
+
+    # ── 1b. Credit check ────────────────────────────────────────────────────
+    # Property Recommendation = 2 credits; everything else = 1.
+    credit_cost = 2 if enquiry_type == "property_recommendation" else 1
+    credits_before = credit_service.get_user_credits(user_id)
+    if credits_before is None or credits_before < credit_cost:
+        logger.warning(
+            f"[CREDITS] Insufficient credits for user_id={user_id} "
+            f"credits={credits_before} required={credit_cost} "
+            f"enquiry_type={enquiry_type}"
+        )
+        raise HTTPException(status_code=402, detail="Insufficient credits")
+    logger.info(
+        f"[CREDITS] Pre-request balance: user_id={user_id} "
+        f"credits={credits_before} required={credit_cost}"
     )
 
     # ── 2. Merge filters ─────────────────────────────────────────────────────
@@ -583,6 +608,7 @@ async def stream_message(
                 "role": "assistant",
                 "content": reply,
                 "timestamp": now,
+                "enquiry_type": enquiry_type,
                 **metrics.to_dict(),
             }
             memory_service.save_messages(conversation_id, messages + [user_msg, asst_msg])
@@ -610,12 +636,16 @@ async def stream_message(
                 "timestamp": now,
             })
 
-        # Deduct credit
+        # Deduct credit — uses the per-enquiry cost computed at the top
         credits_remaining: int | None = None
         try:
-            credits_remaining = credit_service.deduct_user_credits(user_id, amount=1)
+            credits_remaining = credit_service.deduct_user_credits(user_id, amount=credit_cost)
             if credits_remaining is None:
-                credits_remaining = credits_before - 1
+                credits_remaining = credits_before - credit_cost
+            logger.info(
+                f"[CREDITS] Deduction successful: user_id={user_id} "
+                f"before={credits_before} after={credits_remaining} amount={credit_cost}"
+            )
         except Exception as exc:
             logger.error(f"[CREDITS] Deduction FAILED for user_id={user_id}: {exc}")
 

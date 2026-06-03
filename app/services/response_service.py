@@ -10,6 +10,7 @@ Provides two entry points:
 """
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -215,21 +216,26 @@ async def generate_response(
         {"role": "system", "content": system_text}
     ] + agent_messages
 
+    # Single source of truth for the generation model in this function.
+    requested_model = "gpt-4.1"
     client = get_openai_async_client()
+    call_started = time.perf_counter()
     response = await client.chat.completions.create(
-        model="gpt-4.1",
+        model=requested_model,
         # max_tokens=12096,
         messages=openai_messages,
         temperature=0,
     )
+    call_ms = int((time.perf_counter() - call_started) * 1000)
 
     # ── 6. Observability — record model + usage on the per-turn metrics ──────
     if metrics is not None:
         usage = getattr(response, "usage", None)
         metrics.add(
-            model=getattr(response, "model", "") or "gpt-4.1",
+            model=getattr(response, "model", "") or requested_model,
             input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
             output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            latency_ms=call_ms,
         )
 
     reply = response.choices[0].message.content
@@ -289,12 +295,14 @@ async def stream_response(
     # stream_options.include_usage is REQUIRED for the stream to emit a final
     # chunk carrying token counts. Without it, chunk.usage is None throughout
     # and metrics.input_tokens / output_tokens stay at 0.
+    requested_model = "gpt-4.1"
     client = get_openai_async_client()
     captured_model: str = ""
     captured_usage = None
+    call_started = time.perf_counter()
     try:
         stream = await client.chat.completions.create(
-            model="gpt-4.1",
+            model=requested_model,
             messages=openai_messages,
             stream=True,
             temperature=0,
@@ -316,6 +324,9 @@ async def stream_response(
         logger.error(f"[STREAM] OpenAI stream error: {e}")
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
     finally:
+        # Per-call latency = full stream lifecycle including the final usage
+        # chunk. Always recorded — even when the stream cuts short.
+        call_ms = int((time.perf_counter() - call_started) * 1000)
         # Always record what we have. On disconnect / mid-stream exception the
         # final usage chunk never arrived → tokens stay 0, which is correct.
         if metrics is not None:
@@ -325,7 +336,8 @@ async def stream_response(
                     "terminated before completion. Tokens recorded as 0."
                 )
             metrics.add(
-                model=captured_model or "gpt-4.1",
+                model=captured_model or requested_model,
                 input_tokens=getattr(captured_usage, "prompt_tokens", 0) if captured_usage else 0,
                 output_tokens=getattr(captured_usage, "completion_tokens", 0) if captured_usage else 0,
+                latency_ms=call_ms,
             )

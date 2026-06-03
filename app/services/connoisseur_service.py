@@ -307,6 +307,7 @@ def parse_intent(
         "confidence": 0.5,
     }
 
+    requested_model = "gpt-4o-mini"
     try:
         client = get_openai_client()
 
@@ -317,8 +318,9 @@ def parse_intent(
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
 
+        call_started = time.perf_counter()
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=requested_model,
             max_tokens=400,
             messages=[
                 {"role": "system", "content": _INTENT_SYSTEM},
@@ -328,13 +330,15 @@ def parse_intent(
             tools=[_INTENT_TOOL],
             tool_choice={"type": "function", "function": {"name": "parse_query_intent"}},
         )
+        call_ms = int((time.perf_counter() - call_started) * 1000)
 
         if metrics is not None:
             usage = getattr(resp, "usage", None)
             metrics.add(
-                model=getattr(resp, "model", "") or "gpt-4o-mini",
+                model=getattr(resp, "model", "") or requested_model,
                 input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
                 output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+                latency_ms=call_ms,
             )
 
         raw = resp.choices[0].message.tool_calls[0].function.arguments

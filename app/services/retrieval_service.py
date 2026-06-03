@@ -96,26 +96,6 @@ def _call_rpc(supabase, payload: dict) -> list[dict]:
     return rows
 
 
-def _format_properties(properties: list[dict]) -> str:
-    """Format property rows into the text block injected into the LLM system prompt."""
-    lines = ["AVAILABLE PROPERTIES (ranked by match score):\n"]
-    for i, p in enumerate(properties, 1):
-        # v2 function returns prop_name (not property_name)
-        name = p.get("prop_name") or p.get("property_name") or "N/A"
-        lines.append(
-            f"{i}. {name}\n"
-            f"   Room: {p.get('room_type', 'N/A')} ({p.get('room_name', '')}) — "
-            f"£{p.get('rent_pw', 'N/A')}/week | {p.get('lease_weeks', 'N/A')} weeks\n"
-            f"   Move-in: {p.get('move_in', 'N/A')} | Score: {p.get('match_score', 'N/A')}/100\n"
-            f"   Walk: {p.get('walk_time_mins', 'N/A')} min "
-            f"({p.get('walk_dist_km', 'N/A')} km) | "
-            f"Car: {p.get('car_time_mins', 'N/A')} min\n"
-            f"   Amenities: {p.get('property_amenities', 'N/A')}\n"
-            f"   Recon: {p.get('recon_conf', 'N/A')} | "
-            f"Commission: {p.get('avg_commission', 'N/A')}\n"
-            f"Gaurantor: {p.get('gaurantor', 'N/A')}"
-        )
-    return "\n".join(lines)
 
 
 def fetch_properties(filters: dict) -> tuple[str, bool]:

@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -24,7 +25,7 @@ from pydantic import BaseModel
 from app.core.dependencies import get_current_user
 from app.core.llm import get_openai_async_client
 from app.core.llm_metrics import LLMMetrics
-from app.services import memory_service
+from app.services import memory_service,credit_service
 from app.services.connoisseur_service import (
     _get_connoisseur_system_prompt,
     parse_intent,
@@ -77,6 +78,16 @@ async def connoisseur_chat(
         # Auth check — conversation must belong to the authenticated user
         if convo.get("user_id") != current_user["id"]:
             raise HTTPException(status_code=403, detail="Access denied")
+        
+        user_id = convo.get("user_id")
+
+        
+        # ── 1b. Credit check — must happen before any heavy processing ───────────
+        credits_before = credit_service.get_user_credits(user_id)
+        if credits_before is None or credits_before <= 0:
+            logger.warning(f"[CREDITS] Insufficient credits for user_id={user_id} credits={credits_before}")
+            raise HTTPException(status_code=402, detail="Insufficient credits")
+        logger.info(f"[CREDITS] Pre-request balance: user_id={user_id} credits={credits_before}")
 
         raw_messages: list[dict] = convo.get("messages") or []
         # Pass last 10 messages as conversation history
@@ -192,6 +203,8 @@ async def connoisseur_chat(
         stream_errored = False
         captured_model: str = ""
         captured_usage = None
+        requested_model = "gpt-4.1"
+        call_started = time.perf_counter()
 
         try:
             client = get_openai_async_client()
@@ -199,7 +212,7 @@ async def connoisseur_chat(
             # carry token counts — without it, captured_usage stays None and
             # input/output tokens are recorded as 0.
             stream = await client.chat.completions.create(
-                model="gpt-4.1",
+                model=requested_model,
                 messages=openai_messages,
                 stream=True,
                 stream_options={"include_usage": True},
@@ -223,6 +236,8 @@ async def connoisseur_chat(
             logger.error(f"[CONNOISSEUR] Stream error: {stream_err}")
             yield f"data: {json.dumps({'error': str(stream_err)})}\n\n"
         finally:
+            # Per-call latency = full stream lifecycle (incl. final usage chunk)
+            call_ms = int((time.perf_counter() - call_started) * 1000)
             # Always record usage. On disconnect / mid-stream exception the
             # usage chunk never arrived → tokens stay 0, which is spec-correct.
             if captured_usage is None:
@@ -232,9 +247,10 @@ async def connoisseur_chat(
                     "stream likely terminated before completion. Tokens=0."
                 )
             metrics.add(
-                model=captured_model or "gpt-4.1",
+                model=captured_model or requested_model,
                 input_tokens=getattr(captured_usage, "prompt_tokens", 0) if captured_usage else 0,
                 output_tokens=getattr(captured_usage, "completion_tokens", 0) if captured_usage else 0,
+                latency_ms=call_ms,
             )
 
         # Emit sources BEFORE [DONE] — frontend exits on [DONE] so anything after is ignored
@@ -268,6 +284,7 @@ async def connoisseur_chat(
                         "role":      "assistant",
                         "content":   full_reply,
                         "timestamp": _now(),
+                        "enquiry_type": body.enquiry_type,
                         **metrics.to_dict(),
                     },
                 ]
@@ -278,6 +295,34 @@ async def connoisseur_chat(
                 )
             except Exception as save_err:
                 logger.warning(f"[CONNOISSEUR] save_messages failed: {save_err}")
+
+        # ── Deduct credit — only on a successful response ────────────────────
+        # Connoisseur = 1 credit (single LLM call for generation).
+        credits_remaining: Optional[int] = None
+        if full_reply and not stream_errored:
+            try:
+                credits_remaining = credit_service.deduct_user_credits(user_id, amount=1)
+                if credits_remaining is None:
+                    credits_remaining = credits_before - 1
+                logger.info(
+                    f"[CREDITS] Deduction successful: user_id={user_id} "
+                    f"before={credits_before} after={credits_remaining} amount=1"
+                )
+            except Exception as exc:
+                # Never break the response — credit deduction failure is non-fatal
+                logger.error(
+                    f"[CREDITS] Deduction FAILED for user_id={user_id}: {exc}",
+                    exc_info=True,
+                )
+
+        # ── Meta event BEFORE [DONE] so the frontend can update credits ──────
+        # Frontend exits on [DONE], so anything emitted after [DONE] is ignored.
+        meta = {
+            "type": "meta",
+            "conversation_id": body.conversation_id,
+            "credits_remaining": credits_remaining,
+        }
+        yield f"data: {json.dumps(meta)}\n\n"
 
         yield "data: [DONE]\n\n"
 
