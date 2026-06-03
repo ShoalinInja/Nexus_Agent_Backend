@@ -12,34 +12,185 @@ Pipeline:
 
 import json
 import logging
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import httpx
+
+from app.core.config import settings
 from app.core.database import get_supabase
 from app.core.llm import get_openai_client, get_openai_async_client
 
 logger = logging.getLogger(__name__)
 
 
-# ── System prompt ────────────────────────────────────────────────────────────
+# ── System prompt: remote fetch with cache + fallback ────────────────────────
+#
+# Fetches the system prompt from a public Supabase Storage URL on first use,
+# caches it for SALES_CON_SYSTEM_PROMPT_TTL_SECONDS, and falls back to a local
+# copy (then hardcoded string) on any failure.
+#
+# TODO: the local `FALLBACK_SYSTEM_PROMPT` will drift from the remote file
+#       over time. Add a periodic sync (CI job or scripts/sync_prompts.py)
+#       so the fallback stays close to production behaviour.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HARDCODED_FALLBACK = (
+    "You are the Property Connoisseur, an expert assistant for student accommodation. "
+    "Answer questions accurately based on the knowledge context provided."
+)
+
+
+def _load_local_fallback() -> str:
+    """Load the bundled local copy of the system prompt; hardcoded if file missing."""
+    try:
+        path = (
+            Path(__file__).parent.parent / "prompt"
+            / "PROPERTY_CONNOISSEUR_SYSTEM_PROMPT.md"
+        )
+        text = path.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    except Exception as e:
+        logger.warning(f"[CONNOISSEUR] Local fallback prompt file unreadable: {e}")
+    return _HARDCODED_FALLBACK
+
+
+# Module-load-time snapshot of the local prompt — preserves current behaviour
+# whenever the remote fetch fails.
+FALLBACK_SYSTEM_PROMPT: str = _load_local_fallback()
+
+
+@dataclass
+class _PromptCache:
+    value: Optional[str] = None
+    fetched_at: float = 0.0  # epoch seconds
+
+
+_prompt_cache = _PromptCache()
+# Guards both the cache fields AND the HTTP fetch itself so concurrent callers
+# on a cold cache don't all hit Supabase Storage simultaneously (TTL stampede).
+_prompt_cache_lock = threading.Lock()
+
+
+def _fetch_remote_prompt() -> Optional[str]:
+    """
+    Fetch the system prompt from Supabase Storage.
+    Retries twice with exponential backoff (1s, 2s) on connection/timeout/5xx.
+    Returns the prompt body on success, None on any final failure.
+    """
+    url = settings.SALES_CON_SYSTEM_PROMPT_URL
+    backoffs = [0, 1, 2]  # 3 attempts total: immediate, +1s, +2s
+
+    for attempt, delay in enumerate(backoffs, start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = httpx.get(url, timeout=5.0)
+            if resp.status_code >= 500:
+                logger.warning(
+                    f"[PROMPT] Attempt {attempt}/3 returned {resp.status_code} "
+                    f"— retrying"
+                )
+                continue
+            if resp.status_code != 200:
+                logger.error(
+                    f"[PROMPT] Non-200 response {resp.status_code} from {url} "
+                    "— not retrying"
+                )
+                return None
+
+            body = (resp.text or "").strip()
+            if not body:
+                logger.error(f"[PROMPT] Empty body from {url} — treating as failure")
+                return None
+            return body
+
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as e:
+            logger.warning(
+                f"[PROMPT] Attempt {attempt}/3 network error: {type(e).__name__}: {e}"
+            )
+            continue
+        except Exception as e:
+            logger.error(f"[PROMPT] Unexpected error fetching prompt: {e}")
+            return None
+
+    logger.error(f"[PROMPT] All 3 attempts to fetch {url} failed")
+    return None
+
 
 def _get_connoisseur_system_prompt() -> str:
     """
-    Load the Property Connoisseur system prompt from the local markdown file.
-    Falls back to a hardcoded string if the file is missing or unreadable.
-    No Supabase fetch — the connoisseur prompt is local-only.
+    Return the Sales Connoisseur system prompt.
+
+    - First call (and after TTL expiry): fetches from Supabase Storage with retries.
+    - Subsequent calls within TTL: returns the cached value with no network I/O.
+    - On any fetch failure: returns FALLBACK_SYSTEM_PROMPT and logs ERROR.
+
+    Always emits a structured log line so we can answer the question
+    "why does the agent feel different today?":
+        prompt_source=remote|fallback latency_ms=N bytes=N cache_hit=true|false
     """
-    _FALLBACK = (
-        "You are the Property Connoisseur, an expert assistant for student accommodation. "
-        "Answer questions accurately based on the knowledge context provided."
-    )
-    try:
-        path = Path(__file__).parent.parent / "prompt" / "PROPERTY_CONNOISSEUR_SYSTEM_PROMPT.md"
-        return path.read_text(encoding="utf-8").strip()
-    except Exception:
-        logger.warning("[CONNOISSEUR] System prompt file not found — using hardcoded fallback")
-        return _FALLBACK
+    ttl = settings.SALES_CON_SYSTEM_PROMPT_TTL_SECONDS
+    now = time.monotonic()
+    started = now
+
+    # Fast path: cache hit (no lock needed for read of a single object reference)
+    if (
+        _prompt_cache.value is not None
+        and (now - _prompt_cache.fetched_at) < ttl
+    ):
+        logger.info(
+            f"[PROMPT] prompt_source=remote latency_ms=0 "
+            f"bytes={len(_prompt_cache.value)} cache_hit=true"
+        )
+        return _prompt_cache.value
+
+    # Slow path: refresh under lock (prevents stampede)
+    with _prompt_cache_lock:
+        # Re-check inside the lock — another thread may have refreshed already
+        now = time.monotonic()
+        if (
+            _prompt_cache.value is not None
+            and (now - _prompt_cache.fetched_at) < ttl
+        ):
+            logger.info(
+                f"[PROMPT] prompt_source=remote latency_ms=0 "
+                f"bytes={len(_prompt_cache.value)} cache_hit=true"
+            )
+            return _prompt_cache.value
+
+        fetched = _fetch_remote_prompt()
+        latency_ms = int((time.monotonic() - started) * 1000)
+
+        if fetched is not None:
+            _prompt_cache.value = fetched
+            _prompt_cache.fetched_at = time.monotonic()
+            logger.info(
+                f"[PROMPT] prompt_source=remote latency_ms={latency_ms} "
+                f"bytes={len(fetched)} cache_hit=false"
+            )
+            return fetched
+
+        # Fetch failed — use local fallback. Do NOT cache the fallback so the
+        # next request retries the remote URL instead of being stuck on fallback
+        # for the entire TTL window.
+        logger.error(
+            f"[PROMPT] prompt_source=fallback latency_ms={latency_ms} "
+            f"bytes={len(FALLBACK_SYSTEM_PROMPT)} cache_hit=false"
+        )
+        return FALLBACK_SYSTEM_PROMPT
+
+
+def _reset_prompt_cache_for_tests() -> None:
+    """Test-only helper — wipes the in-process cache between test cases."""
+    with _prompt_cache_lock:
+        _prompt_cache.value = None
+        _prompt_cache.fetched_at = 0.0
 
 
 # ── Intent parser constants ──────────────────────────────────────────────────
@@ -317,26 +468,82 @@ def rerank_chunks(candidates: list) -> tuple:
     return passing, low_confidence
 
 
+def _serialise_structured(obj) -> str:
+    """Compact, deterministic JSON for a single chunk's structured_content."""
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
 def build_chunk_context(chunks: list) -> str:
     """
-    Format retrieved chunks into a <knowledge_context> XML block for the LLM.
-    Each entry: [N] title — source_section\ncontent
+    Format retrieved chunks into a <knowledge_context> block for the LLM.
+
+    Body field is `structured_content` (jsonb), serialised as compact JSON and
+    wrapped in <chunk id="..."> tags. The wrapping is a guard against prompt
+    injection: the system prompt should state that content inside <chunk> tags
+    is reference data, not instructions.
+
+    If a chunk's structured_content is null/empty, we fall back to its plain-text
+    `content` field for that chunk only and log a warning with the chunk id.
+    No chunks are silently dropped.
+
+    Metadata (title, category, stage, tags, priority, source_section) is
+    rendered as a header line outside the JSON body so existing context shape
+    is preserved.
     """
     if not chunks:
-        return "<knowledge_context>\nNo relevant knowledge chunks retrieved.\n</knowledge_context>"
+        return (
+            "<knowledge_context>\n"
+            "No relevant knowledge chunks retrieved.\n"
+            "</knowledge_context>"
+        )
 
     lines = ["<knowledge_context>"]
     for i, chunk in enumerate(chunks, start=1):
-        title   = chunk.get("title") or "Untitled"
-        section = chunk.get("source_section") or ""
-        content = (chunk.get("content") or "").strip()
-
-        header = f"[{i}] {title}"
+        chunk_id = chunk.get("id") or f"unknown-{i}"
+        title    = chunk.get("title") or "Untitled"
+        section  = chunk.get("source_section") or ""
+        category = chunk.get("category") or ""
+        stage    = chunk.get("stage") or ""
+        priority = chunk.get("priority")
+        tags     = chunk.get("tags") or []
+        
+        # Header — preserves existing metadata shape
+        header_parts = [f"[{i}] {title}"]
         if section:
-            header += f" — {section}"
+            header_parts.append(f"— {section}")
+        header = " ".join(header_parts)
+
+        meta_bits = []
+        if category:        meta_bits.append(f"category={category}")
+        if stage:           meta_bits.append(f"stage={stage}")
+        if priority is not None: meta_bits.append(f"priority={priority}")
+        if tags:            meta_bits.append(f"tags={tags}")
+        meta_line = " | ".join(meta_bits) if meta_bits else ""
+
+        # Body — structured_content (JSON) preferred, fall back to content
+        structured = chunk.get("structured_content")
+        if structured is None or (isinstance(structured, (dict, list)) and not structured):
+            # Per-chunk fallback — never drop the chunk, never raise
+            fallback_body = (chunk.get("content") or "").strip()
+            logger.warning(
+                f"[CONNOISSEUR] chunk id={chunk_id} has null/empty "
+                "structured_content — falling back to plain `content` for this chunk"
+            )
+            body = fallback_body or "[Mention there is no knowledge base for the request and try to fulfiil the request]"
+        else:
+            try:
+                body = _serialise_structured(structured)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    f"[CONNOISSEUR] chunk id={chunk_id} structured_content not "
+                    f"JSON-serialisable ({e}) — falling back to `content`"
+                )
+                body = (chunk.get("content") or "").strip() or "[empty]"
 
         lines.append(header)
-        lines.append(content)
+        if meta_line:
+            lines.append(meta_line)
+        lines.append(f'<chunk id="{chunk_id}">{body}</chunk>')
         lines.append("")  # blank line between entries
 
     lines.append("</knowledge_context>")
