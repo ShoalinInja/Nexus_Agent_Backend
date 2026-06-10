@@ -34,7 +34,7 @@ from app.services.connoisseur_service import (
     deduplicate_chunks,
     rerank_chunks,
     build_chunk_context,
-    log_fetch,
+    
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,9 @@ async def connoisseur_chat(
         logger.info(f"[CREDITS] Pre-request balance: user_id={user_id} credits={credits_before}")
 
         raw_messages: list[dict] = convo.get("messages") or []
+        if not raw_messages:
+            memory_service.update_enquiry_type(body.conversation_id, body.enquiry_type)
+
         # Pass last 10 messages as conversation history
         history_slice = raw_messages[-10:]
         messages = [
@@ -98,16 +101,8 @@ async def connoisseur_chat(
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
 
-        log_fetch(
-            fetch_type="connoisseur_history",
-            user_id=current_user["id"],
-            conversation_id=body.conversation_id,
-            result_count=len(messages),
-        )
-        logger.info(
-            f"[CONNOISSEUR] Conversation loaded — "
-            f"conversation_id={body.conversation_id} history_messages={len(messages)}"
-        )
+
+
 
         # Step 2 — Intent parse (sync, gpt-4o-mini)
         intent = parse_intent(body.prompt, messages, metrics=metrics)
@@ -129,13 +124,6 @@ async def connoisseur_chat(
         for i, emb in enumerate(embeddings):
             results = search_chunks(emb, match_count=8)
             all_results.append(results)
-            log_fetch(
-                fetch_type="connoisseur_retrieval",
-                user_id=current_user["id"],
-                conversation_id=body.conversation_id,
-                result_count=len(results),
-            )
-            logger.info(f"[RETRIEVAL] Search {i+1}/4 — {len(results)} chunks returned")
 
         candidates = deduplicate_chunks(all_results)
         logger.info(

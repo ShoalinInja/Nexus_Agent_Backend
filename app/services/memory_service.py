@@ -240,3 +240,9 @@ def update_last_intent(conversation_id: str, intent: dict) -> None:
         "updated_at": _now(),
     }).eq("conversation_id", conversation_id).execute()
     # logger.info(f"[MEMORY] last_intent updated for {conversation_id}")
+
+def update_enquiry_type(conversation_id: str, enquiry_type: str) -> None:
+    supabase = get_supabase()
+    supabase.table(TABLE).update(
+        {"enquiry_type": enquiry_type, "updated_at": _now()}
+    ).eq("conversation_id", conversation_id).execute()

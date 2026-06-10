@@ -96,11 +96,6 @@ async def send_message(
         f"credits={credits_before} required={credit_cost}"
     )
 
-    # logger.info(
-    #     f"[CHAT] ── STEP 1: LOAD ── "
-    #     f"enquiry_type={enquiry_type} is_first_message={is_first_message} "
-    #     f"existing_messages={msg_count} stored_filters={stored_filters}"
-    # )
 
     # ── 2. Merge filters (request overrides stored) ──────────────────────────
     request_filters = {
