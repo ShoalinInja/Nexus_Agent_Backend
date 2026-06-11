@@ -79,6 +79,12 @@ async def send_message(
         or "property_recommendation"
     )
 
+    # Sync enquiry_type to DB whenever the agent changes (not just first message).
+    # This keeps the conversation-level column correct when users switch agents
+    # mid-conversation without starting a new chat.
+    if body.enquiry_type and body.enquiry_type != convo.get("enquiry_type"):
+        memory_service.update_enquiry_type(conversation_id, body.enquiry_type)
+
     # ── 1b. Credit check — must happen before any heavy processing ───────────
     # Property Recommendation = 2 credits (multi-call pipeline: decision → retrieval → generation).
     # All other agents = 1 credit.
@@ -216,12 +222,15 @@ async def send_message(
             # logger.info("[ROUTING] force_refresh override — needs_retrieval set to True")
 
         # Apply extracted params from prompt text to effective_filters.
-        # Priority: stored_filters < extracted_params < request_body (UI selections win).
+        # Priority: stored < LLM-extracted < dropdown (current_filters diff) < request_body.
+        # cf_overrides ensures the user's active dropdown values always beat anything
+        # the LLM may have extracted from prior conversation history.
         extracted_changes = plan.extracted_params
         # logger.info(f"[FILTERS] Extracted from prompt: {extracted_changes}")
 
         if extracted_changes:
-            effective_filters = {**stored_filters, **extracted_changes, **request_filters}
+            cf_overrides = {key: data["to"] for key, data in frontend_filter_diff.items()}
+            effective_filters = {**stored_filters, **extracted_changes, **cf_overrides, **request_filters}
 
         # logger.info(f"[FILTERS] effective_filters before retrieval: {effective_filters}")
 
@@ -437,6 +446,10 @@ async def stream_message(
         body.enquiry_type or convo.get("enquiry_type") or "property_recommendation"
     )
 
+    # Sync enquiry_type to DB whenever the agent changes.
+    if body.enquiry_type and body.enquiry_type != convo.get("enquiry_type"):
+        memory_service.update_enquiry_type(conversation_id, body.enquiry_type)
+
     # ── 1b. Credit check ────────────────────────────────────────────────────
     # Property Recommendation = 2 credits; everything else = 1.
     credit_cost = 2 if enquiry_type == "property_recommendation" else 1
@@ -531,7 +544,8 @@ async def stream_message(
 
         extracted_changes = plan.extracted_params
         if extracted_changes:
-            effective_filters = {**stored_filters, **extracted_changes, **request_filters}
+            cf_overrides = {key: data["to"] for key, data in frontend_filter_diff.items()}
+            effective_filters = {**stored_filters, **extracted_changes, **cf_overrides, **request_filters}
 
         if plan.needs_retrieval:
             property_data, data_fetched = retrieval_service.fetch_properties(effective_filters)

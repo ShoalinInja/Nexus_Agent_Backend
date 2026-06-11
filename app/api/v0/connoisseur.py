@@ -90,7 +90,8 @@ async def connoisseur_chat(
         logger.info(f"[CREDITS] Pre-request balance: user_id={user_id} credits={credits_before}")
 
         raw_messages: list[dict] = convo.get("messages") or []
-        if not raw_messages:
+        # Sync enquiry_type to DB whenever the agent changes (not just first message).
+        if body.enquiry_type and body.enquiry_type != convo.get("enquiry_type"):
             memory_service.update_enquiry_type(body.conversation_id, body.enquiry_type)
 
         # Pass last 10 messages as conversation history
